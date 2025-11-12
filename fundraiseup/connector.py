@@ -17,7 +17,7 @@ class SyncConfig:
     def __init__(self, configuration: dict):
         # Checkpointing
         self.checkpoint_every_records = int(
-            configuration.get("CHECKPOINT_EVERY_RECORDS", 1000)
+            configuration.get("CHECKPOINT_EVERY_RECORDS", 10000)
         )
 
         # Debug/testing
@@ -311,22 +311,22 @@ def update(configuration: dict, state: dict):
         page_limit=config.page_limit,
     )
 
-    # Events
-    def fetch_events(starting_after=None, limit=100):
-        return get_events(
-            session,
-            limit=limit,
-            starting_after=starting_after,
-            event_types=config.event_types,
-        )
+    # # Events
+    # def fetch_events(starting_after=None, limit=100):
+    #     return get_events(
+    #         session,
+    #         limit=limit,
+    #         starting_after=starting_after,
+    #         event_types=config.event_types,
+    #     )
 
-    yield from sync_entity(
-        entity_name="events",
-        fetch_page_fn=fetch_events,
-        transform_fn=_extract_event_row,
-        checkpoint_mgr=checkpoint_mgr,
-        page_limit=config.page_limit,
-    )
+    # yield from sync_entity(
+    #     entity_name="events",
+    #     fetch_page_fn=fetch_events,
+    #     transform_fn=_extract_event_row,
+    #     checkpoint_mgr=checkpoint_mgr,
+    #     page_limit=config.page_limit,
+    # )
 
     # 5. Emit final checkpoint with latest cursors
     yield checkpoint_mgr.emit_final_checkpoint()
