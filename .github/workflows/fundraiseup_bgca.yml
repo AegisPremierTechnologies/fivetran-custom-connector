@@ -1,0 +1,49 @@
+name: Deploy SA360 Custom Column Connector
+# Trigger the workflow on push or pull request events to the main branch
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "fundraiseup/**"
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - "sa360-custom-columns/**"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install fivetran-connector-sdk
+
+      - name: Create configuration.json
+        working-directory: "./fundraiseup"
+        env:
+          FUNDRAISEUP_API_KEY: ${{ secrets.BGCA_FUNDRAISEUP_API_KEY }}
+        run: |
+          echo "Creating config.json with provided secrets..."
+          cat <<EOF > configuration.json
+          {
+            "FUNDRAISEUP_API_KEY": "$FUNDRAISEUP_API_KEY"
+          }
+          EOF
+
+      - name: Deploy to fivetran
+        working-directory: "./fundraiseup"
+        env:
+          FIVETRAN_API_KEY: ${{ secrets.FIVETRAN_API_KEY }} # Expose the secret as an environment variable
+          FIVETRAN_DESTINATION: ${{ secrets.FIVETRAN_FUNDRAISEUP_DESTINATION }} # Expose the secret as an environment variable
+        run: |
+          fivetran deploy --api-key $FIVETRAN_API_KEY --destination $FIVETRAN_DESTINATION --configuration ./configuration.json --connection fundraiseup_client_bgca --force

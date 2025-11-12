@@ -3,6 +3,8 @@ name: Deploy josh_custom_connector (weather-example)
 on:
   push:
     branches: [main]
+    paths:
+      - "weather-example/**"
 
 jobs:
   build:
