@@ -1,14 +1,11 @@
-name: Deploy SA360 Custom Column Connector
+name: Deploy FundraiseUp BGCA Connector
 # Trigger the workflow on push or pull request events to the main branch
 on:
   pull_request:
     branches: [main]
     paths:
       - "fundraiseup/**"
-  # push:
-  #   branches: [main]
-  #   paths:
-  #     - "sa360-custom-columns/**"
+
 
 jobs:
   build:
