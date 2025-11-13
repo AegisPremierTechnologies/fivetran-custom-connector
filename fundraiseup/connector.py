@@ -1,6 +1,7 @@
 from fivetran_connector_sdk import Connector
 from fivetran_connector_sdk import Logging as log
 from fivetran_connector_sdk import Operations as op
+import json
 
 from fundraiseup_api import get_session, get_supporters, get_donations, get_events
 from schema import schema as fru_schema
@@ -78,18 +79,24 @@ def _extract_supporter_row(s: dict) -> dict:
         "account_id": account.get("id"),
         "account_code": account.get("code"),
         "account_name": account.get("name"),
-        "address": (s.get("address") and str(s.get("address"))) or None,
-        "employer": (s.get("employer") and str(s.get("employer"))) or None,
+        "address": json.dumps(s.get("address")) if s.get("address") else None,
+        "employer": json.dumps(s.get("employer")) if s.get("employer") else None,
     }
 
 
 def _extract_donation_row(d: dict) -> dict:
+    """
+    Extract donation data keeping nested objects as JSON (Snowflake VARIANT).
+    Only extracts IDs for foreign key references.
+    """
     account = d.get("account") or {}
+    supporter = d.get("supporter") or {}
     campaign = d.get("campaign") or {}
     designation = d.get("designation") or {}
-    supporter = d.get("supporter") or {}
     recurring_plan = d.get("recurring_plan") or {}
+
     return {
+        # Core donation fields
         "id": d.get("id"),
         "created_at": d.get("created_at"),
         "livemode": d.get("livemode"),
@@ -102,28 +109,36 @@ def _extract_donation_row(d: dict) -> dict:
         "failed_at": d.get("failed_at"),
         "refunded_at": d.get("refunded_at"),
         "source": d.get("source"),
+        # Foreign key references (extract IDs only for easy joins)
         "supporter_id": supporter.get("id"),
         "campaign_id": campaign.get("id"),
         "designation_id": designation.get("id"),
         "recurring_plan_id": recurring_plan.get("id"),
         "account_id": account.get("id"),
-        "supporter": (supporter and str(supporter)) or None,
-        "campaign": (campaign and str(campaign)) or None,
-        "designation": (designation and str(designation)) or None,
-        "element": (d.get("element") and str(d.get("element"))) or None,
-        "platform_fee": (d.get("platform_fee") and str(d.get("platform_fee"))) or None,
-        "processing_fee": (d.get("processing_fee") and str(d.get("processing_fee")))
-        or None,
-        "payout": (d.get("payout") and str(d.get("payout"))) or None,
-        "payment": (d.get("payment") and str(d.get("payment"))) or None,
-        "device": (d.get("device") and str(d.get("device"))) or None,
-        "utm": (d.get("utm") and str(d.get("utm"))) or None,
-        "fundraiser": (d.get("fundraiser") and str(d.get("fundraiser"))) or None,
-        "tribute": (d.get("tribute") and str(d.get("tribute"))) or None,
-        "custom_fields": (d.get("custom_fields") and str(d.get("custom_fields")))
-        or None,
-        "questions": (d.get("questions") and str(d.get("questions"))) or None,
-        "consent": (d.get("consent") and str(d.get("consent"))) or None,
+        # Store nested objects as JSON (Snowflake VARIANT)
+        "campaign": json.dumps(d.get("campaign")) if d.get("campaign") else None,
+        "designation": (
+            json.dumps(d.get("designation")) if d.get("designation") else None
+        ),
+        "element": json.dumps(d.get("element")) if d.get("element") else None,
+        "platform_fee": (
+            json.dumps(d.get("platform_fee")) if d.get("platform_fee") else None
+        ),
+        "processing_fee": (
+            json.dumps(d.get("processing_fee")) if d.get("processing_fee") else None
+        ),
+        "payout": json.dumps(d.get("payout")) if d.get("payout") else None,
+        "payment": json.dumps(d.get("payment")) if d.get("payment") else None,
+        "device": json.dumps(d.get("device")) if d.get("device") else None,
+        "utm": json.dumps(d.get("utm")) if d.get("utm") else None,
+        "fundraiser": json.dumps(d.get("fundraiser")) if d.get("fundraiser") else None,
+        "tribute": json.dumps(d.get("tribute")) if d.get("tribute") else None,
+        "custom_fields": (
+            json.dumps(d.get("custom_fields")) if d.get("custom_fields") else None
+        ),
+        "questions": json.dumps(d.get("questions")) if d.get("questions") else None,
+        "consent": json.dumps(d.get("consent")) if d.get("consent") else None,
+        # Other fields
         "url": d.get("url"),
         "on_behalf_of": d.get("on_behalf_of"),
         "receipt_id": d.get("receipt_id"),
@@ -255,6 +270,85 @@ def sync_entity(
     )
 
 
+def sync_donations_with_supporters(
+    fetch_page_fn,
+    checkpoint_mgr: CheckpointManager,
+    page_limit: int = 0,
+):
+    """
+    Sync donations and upsert embedded supporters.
+
+    For each donation:
+    1. Upsert related supporter (if present in donation object)
+    2. Upsert the donation itself
+
+    All other nested objects (campaign, designation, fees, payment, etc.)
+    are kept as JSON for Snowflake VARIANT columns.
+    """
+    cursor = checkpoint_mgr.state.get_cursor("donations")
+    pages_fetched = 0
+    total_donations = 0
+    total_supporters = 0
+
+    log.info(f"[donations] Starting sync from cursor: {cursor}")
+
+    while True:
+        # Check page limit (debug mode)
+        if page_limit > 0 and pages_fetched >= page_limit:
+            log.info(f"[donations] Reached page limit: {page_limit}")
+            break
+
+        # Fetch next page
+        items, has_more = fetch_page_fn(starting_after=cursor, limit=100)
+
+        if not items:
+            log.info(f"[donations] No more records")
+            break
+
+        # Process each donation
+        for donation in items:
+            donation_id = donation.get("id")
+
+            # 1. Upsert supporter if present in donation (maintain relationship)
+            supporter_data = donation.get("supporter")
+            if supporter_data and isinstance(supporter_data, dict):
+                supporter_row = _extract_supporter_row(supporter_data)
+                if supporter_row:
+                    yield op.upsert(table="supporters", data=supporter_row)
+                    total_supporters += 1
+
+            # 2. Upsert the donation (nested objects kept as JSON)
+            donation_row = _extract_donation_row(donation)
+            yield op.upsert(table="donations", data=donation_row)
+            total_donations += 1
+
+            # Track for checkpointing
+            checkpoint_mgr.record_upserted("donations", donation_id)
+
+            # Emit checkpoint if needed
+            if checkpoint_mgr.should_checkpoint():
+                yield checkpoint_mgr.emit_checkpoint()
+
+        # Update cursor and counters
+        cursor = items[-1].get("id")
+        pages_fetched += 1
+
+        log.info(
+            f"[donations] Page {pages_fetched}: {len(items)} donations, "
+            f"{total_supporters} supporters upserted (total: {total_donations} donations)"
+        )
+
+        # Check if more pages available
+        if not has_more:
+            log.info(f"[donations] API reports no more pages")
+            break
+
+    log.info(
+        f"[donations] Sync complete: {total_donations} donations, "
+        f"{total_supporters} supporters in {pages_fetched} pages"
+    )
+
+
 # ============================================================================
 # MAIN UPDATE FUNCTION - Entry point for Fivetran connector
 # ============================================================================
@@ -299,14 +393,12 @@ def update(configuration: dict, state: dict):
         page_limit=config.page_limit,
     )
 
-    # Donations
+    # Donations (with supporter upserts)
     def fetch_donations(starting_after=None, limit=100):
         return get_donations(session, limit=limit, starting_after=starting_after)
 
-    yield from sync_entity(
-        entity_name="donations",
+    yield from sync_donations_with_supporters(
         fetch_page_fn=fetch_donations,
-        transform_fn=_extract_donation_row,
         checkpoint_mgr=checkpoint_mgr,
         page_limit=config.page_limit,
     )

@@ -3,8 +3,9 @@ from typing import Dict, List
 
 def schema(configuration: Dict) -> List[Dict]:
     """
-    Minimal yet useful schemas for supporters, donations, and events.
-    We keep types broadly compatible (mostly STRING) to avoid brittle mappings initially.
+    Schemas for supporters, donations, and events.
+    Nested objects stored as JSON (Snowflake VARIANT columns).
+    Supporters are extracted and upserted to maintain relationships.
     """
     return [
         {
@@ -45,14 +46,13 @@ def schema(configuration: Dict) -> List[Dict]:
                 "failed_at": "STRING",
                 "refunded_at": "STRING",
                 "source": "STRING",
-                # References
+                # Foreign Key References (extract IDs for easy joins)
                 "supporter_id": "STRING",
                 "campaign_id": "STRING",
                 "designation_id": "STRING",
                 "recurring_plan_id": "STRING",
                 "account_id": "STRING",
-                # Nested blobs
-                "supporter": "STRING",
+                # Nested objects as JSON (Snowflake VARIANT)
                 "campaign": "STRING",
                 "designation": "STRING",
                 "element": "STRING",
@@ -67,6 +67,7 @@ def schema(configuration: Dict) -> List[Dict]:
                 "custom_fields": "STRING",
                 "questions": "STRING",
                 "consent": "STRING",
+                # Other fields
                 "url": "STRING",
                 "on_behalf_of": "STRING",
                 "receipt_id": "STRING",
