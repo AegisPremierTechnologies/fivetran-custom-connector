@@ -8,7 +8,7 @@ from schema import schema as fru_schema
 
 
 # ============================================================================
-# CONFIGURATION - Single source of truth
+# CONFIGURATION
 # ============================================================================
 
 
@@ -143,22 +143,6 @@ def _extract_donation_row(d: dict) -> dict:
         "on_behalf_of": d.get("on_behalf_of"),
         "receipt_id": d.get("receipt_id"),
         "anonymous": d.get("anonymous"),
-    }
-
-
-def _extract_event_row(e: dict) -> dict:
-    account = e.get("account") or {}
-    return {
-        "id": e.get("id"),
-        "created_at": e.get("created_at"),
-        "type": e.get("type"),
-        "livemode": e.get("livemode"),
-        "donation": e.get("donation"),
-        "recurring_plan": e.get("recurring_plan"),
-        "supporter": e.get("supporter"),
-        "account_id": account.get("id"),
-        "account_code": account.get("code"),
-        "account_name": account.get("name"),
     }
 
 
@@ -402,23 +386,6 @@ def update(configuration: dict, state: dict):
         checkpoint_mgr=checkpoint_mgr,
         page_limit=config.page_limit,
     )
-
-    # # Events
-    # def fetch_events(starting_after=None, limit=100):
-    #     return get_events(
-    #         session,
-    #         limit=limit,
-    #         starting_after=starting_after,
-    #         event_types=config.event_types,
-    #     )
-
-    # yield from sync_entity(
-    #     entity_name="events",
-    #     fetch_page_fn=fetch_events,
-    #     transform_fn=_extract_event_row,
-    #     checkpoint_mgr=checkpoint_mgr,
-    #     page_limit=config.page_limit,
-    # )
 
     # 5. Emit final checkpoint with latest cursors
     yield checkpoint_mgr.emit_final_checkpoint()

@@ -74,22 +74,4 @@ def schema(configuration: Dict) -> List[Dict]:
                 "anonymous": "BOOLEAN",
             },
         },
-        {
-            "table": "events",
-            "primary_key": ["id"],
-            "columns": {
-                "id": "STRING",
-                "created_at": "STRING",
-                "type": "STRING",
-                "livemode": "BOOLEAN",
-                # Related object IDs
-                "donation": "STRING",
-                "recurring_plan": "STRING",
-                "supporter": "STRING",
-                # Account info (flatten a bit)
-                "account_id": "STRING",
-                "account_code": "STRING",
-                "account_name": "STRING",
-            },
-        },
     ]
