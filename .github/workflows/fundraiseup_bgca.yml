@@ -1,10 +1,11 @@
 name: Deploy FundraiseUp BGCA Connector
 # Trigger the workflow on push or pull request events to the main branch
 on:
-  push:
+  pull_request:
     branches: [main]
     paths:
       - "fundraiseup/**"
+  
 
 
 jobs:
