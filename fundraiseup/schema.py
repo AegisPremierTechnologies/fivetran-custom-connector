@@ -74,4 +74,54 @@ def schema(configuration: Dict) -> List[Dict]:
                 "anonymous": "BOOLEAN",
             },
         },
+        {
+            "table": "recurring_plans",
+            "primary_key": ["id"],
+            "columns": {
+                "id": "STRING",
+                "created_at": "STRING",
+                "livemode": "BOOLEAN",
+                "status": "STRING",
+                "frequency": "STRING",
+                "amount": "STRING",
+                "currency": "STRING",
+                "supporter_id": "STRING",
+                "campaign_id": "STRING",
+                "supporter": "STRING",
+                "campaign": "STRING",
+                # More fields can be added based on query needs
+            },
+        },
+        {
+            "table": "events",
+            "primary_key": ["id"],
+            "columns": {
+                "account": "STRING",  # JSON encoded
+                "created_at": "STRING",
+                "donation": "STRING",
+                "id": "STRING",
+                "livemode": "BOOLEAN",
+                "recurring_plan": "STRING",
+                "supporter": "STRING",
+                "type": "STRING",
+            },
+        },
+        {
+            "table": "fundraisers",
+            "primary_key": ["id"],
+            "columns": {
+                "campaign": "STRING",  # JSON encoded
+                "code": "STRING",
+                "currency": "STRING",
+                "description": "STRING",
+                "designation": "STRING",  # JSON encoded
+                "goal": "STRING",  # JSON encoded
+                "id": "STRING",
+                "image": "STRING",  # JSON encoded
+                "name": "STRING",
+                "slug": "STRING",
+                "status": "STRING",
+                "created_at": "STRING",
+            },
+        },
     ]

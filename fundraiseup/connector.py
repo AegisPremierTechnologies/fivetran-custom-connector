@@ -3,11 +3,22 @@ from fivetran_connector_sdk import Logging as log
 from fivetran_connector_sdk import Operations as op
 
 
-from fundraiseup_api import get_session, get_supporters, get_donations
+from fundraiseup_api import (
+    get_session,
+    get_supporters,
+    get_donations,
+    get_recurring_plans,
+    get_events,
+)
 from schema import schema as fru_schema
 
 from sync_management import SyncConfig, SyncState, CheckpointManager, sync_basic
-from extractors import _extract_supporter_row, _extract_donation_row
+from extractors import (
+    _extract_supporter_row,
+    _extract_donation_row,
+    _extract_recurring_plan_row,
+    _extract_event_row,
+)
 
 
 def sync_supporters(session, checkpoint_mgr, page_limit):
@@ -47,24 +58,45 @@ def sync_donations(session, checkpoint_mgr, page_limit):
     )
 
 
-def update(configuration: dict, state: dict):
-    """Narrative-style orchestration of all sync steps."""
+def sync_recurring_plans(session, checkpoint_mgr, page_limit):
+    def fetch(starting_after=None, limit=100):
+        return get_recurring_plans(session, limit=limit, starting_after=starting_after)
 
+    yield from sync_basic(
+        name="recurring_plans",
+        fetch_page_fn=fetch,
+        transform_fn=_extract_recurring_plan_row,
+        checkpoint_mgr=checkpoint_mgr,
+        page_limit=page_limit,
+    )
+
+
+def sync_events(session, checkpoint_mgr, page_limit):
+    def fetch(starting_after=None, limit=100):
+        return get_events(session, limit=limit, starting_after=starting_after)
+
+    yield from sync_basic(
+        name="events",
+        fetch_page_fn=fetch,
+        transform_fn=_extract_event_row,
+        checkpoint_mgr=checkpoint_mgr,
+        page_limit=page_limit,
+    )
+
+
+# In update(), order: supporters, recurring_plans, events, donations
+# Replace the current update()
+def update(configuration: dict, state: dict):
     session = get_session(configuration)
     config = SyncConfig(configuration)
     sync_state = SyncState(state)
     checkpoint_mgr = CheckpointManager(config, sync_state)
-
     if config.is_debug_mode:
         log.info(f"DEBUG MODE: page_limit = {config.page_limit}")
-
-    # ---- 1. Sync supporters -----------------------------------------
     yield from sync_supporters(session, checkpoint_mgr, config.page_limit)
-
-    # ---- 2. Sync donations (with embedded supporter upserts) --------
+    yield from sync_recurring_plans(session, checkpoint_mgr, config.page_limit)
+    yield from sync_events(session, checkpoint_mgr, config.page_limit)
     yield from sync_donations(session, checkpoint_mgr, config.page_limit)
-
-    # ---- 3. Final checkpoint ----------------------------------------
     yield checkpoint_mgr.emit_final_checkpoint()
 
 

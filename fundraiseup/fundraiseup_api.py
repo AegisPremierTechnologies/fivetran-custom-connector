@@ -120,3 +120,38 @@ def get_donations(
         starting_after=starting_after,
         ending_before=ending_before,
     )
+
+
+def get_recurring_plans(
+    session: requests.Session,
+    limit: int = 100,
+    starting_after: Optional[str] = None,
+    ending_before: Optional[str] = None,
+) -> Tuple[List[Dict], bool]:
+    return list_entities(
+        session,
+        "/v1/recurring_plans",
+        limit=limit,
+        starting_after=starting_after,
+        ending_before=ending_before,
+    )
+
+
+def get_events(
+    session: requests.Session,
+    limit: int = 100,
+    starting_after: Optional[str] = None,
+    ending_before: Optional[str] = None,
+    types: Optional[list] = None,
+) -> Tuple[List[Dict], bool]:
+    extra_params = {}
+    if types:
+        extra_params["types"] = types
+    return list_entities(
+        session,
+        "/v1/events",
+        limit=limit,
+        starting_after=starting_after,
+        ending_before=ending_before,
+        extra_params=extra_params,
+    )

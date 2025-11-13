@@ -73,3 +73,35 @@ def _extract_donation_row(d: dict) -> dict:
         "receipt_id": d.get("receipt_id"),
         "anonymous": d.get("anonymous"),
     }
+
+
+def _extract_recurring_plan_row(r: dict) -> dict:
+    supporter = r.get("supporter") or {}
+    campaign = r.get("campaign") or {}
+    return {
+        "id": r.get("id"),
+        "created_at": r.get("created_at"),
+        "livemode": r.get("livemode"),
+        "status": r.get("status"),
+        "frequency": r.get("frequency"),
+        "amount": r.get("amount"),
+        "currency": r.get("currency"),
+        "supporter_id": supporter.get("id"),
+        "campaign_id": campaign.get("id"),
+        "supporter": json.dumps(r.get("supporter")) if r.get("supporter") else None,
+        "campaign": json.dumps(r.get("campaign")) if r.get("campaign") else None,
+        # Add more fields with conservative mapping as seen necessary
+    }
+
+
+def _extract_event_row(e: dict) -> dict:
+    return {
+        "account": json.dumps(e.get("account")) if e.get("account") else None,
+        "created_at": e.get("created_at"),
+        "donation": e.get("donation"),
+        "id": e.get("id"),
+        "livemode": e.get("livemode"),
+        "recurring_plan": e.get("recurring_plan"),
+        "supporter": e.get("supporter"),
+        "type": e.get("type"),
+    }

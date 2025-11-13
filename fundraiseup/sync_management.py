@@ -34,6 +34,9 @@ class SyncState:
     def to_checkpoint(self):
         return {
             "supporters_last_id": self._state.get("supporters_last_id"),
+            "fundraisers_last_id": self._state.get("fundraisers_last_id"),
+            "recurring_plans_last_id": self._state.get("recurring_plans_last_id"),
+            "events_last_id": self._state.get("events_last_id"),
             "donations_last_id": self._state.get("donations_last_id"),
             "records_since_checkpoint": 0,
         }
