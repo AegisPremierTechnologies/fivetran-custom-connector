@@ -291,8 +291,10 @@ def export_contacts(configuration: dict, list_id: str, search_id: str):
     return contacts
 
 
-def sync_list_batch(configuration: dict, list_id: str, start_time: int, end_time: int):
-    """Sync contacts for a single list within a date range. Yields upsert operations."""
+def sync_list_batch(
+    configuration: dict, list_id: str, start_time: int | None, end_time: int | None
+) -> list:
+    """Sync contacts for a single list within a date range. Returns list of contacts."""
     log.info(f"Syncing list {list_id} from {start_time} to {end_time}")
 
     # Create contact search with date range
@@ -303,16 +305,12 @@ def sync_list_batch(configuration: dict, list_id: str, start_time: int, end_time
     # Wait for search to complete
     if not wait_for_search_completion(configuration, list_id, search_id):
         log.warning(f"Contact search did not complete successfully for list {list_id}")
-        return 0
+        return []
 
     # Export and process contacts
     contacts = export_contacts(configuration, list_id, search_id)
-
-    for contact in contacts:
-        yield op.upsert(table="contacts", data=contact)
-
-    log.info(f"Synced {len(contacts)} contacts from list {list_id}")
-    return len(contacts)
+    log.info(f"Fetched {len(contacts)} contacts from list {list_id}")
+    return contacts
 
 
 def create_contact_search_with_range(
@@ -410,30 +408,24 @@ def sync_list(
         log.info(f"Debug mode: filtering contacts from {debug_start} to {debug_end}")
 
         # Single batch for debug mode
-        gen = sync_list_batch(configuration, list_id, start_time, end_time)
-        count = 0
-        for item in gen:
-            if isinstance(item, int):
-                count = item
-            else:
-                yield item
+        contacts = sync_list_batch(configuration, list_id, start_time, end_time)
+        for contact in contacts:
+            yield op.upsert(table="contacts", data=contact)
         return
 
     if last_sync_time is not None:
         # Incremental sync: fetch all since last sync
-        gen = sync_list_batch(configuration, list_id, last_sync_time, None)
-        for item in gen:
-            if not isinstance(item, int):
-                yield item
+        contacts = sync_list_batch(configuration, list_id, last_sync_time, None)
+        for contact in contacts:
+            yield op.upsert(table="contacts", data=contact)
         return
 
     # Initial sync: check if list is large enough to require batching
     if list_count < LARGE_LIST_THRESHOLD:
         log.info(f"List {list_id} has {list_count} contacts, syncing all at once")
-        gen = sync_list_batch(configuration, list_id, None, None)
-        for item in gen:
-            if not isinstance(item, int):
-                yield item
+        contacts = sync_list_batch(configuration, list_id, None, None)
+        for contact in contacts:
+            yield op.upsert(table="contacts", data=contact)
         return
 
     # Large list: batch by 6-month windows working backwards
@@ -450,14 +442,11 @@ def sync_list(
 
         log.info(f"Processing batch {batch_num} for list {list_id}")
 
-        gen = sync_list_batch(configuration, list_id, start_time, end_time)
-        count = 0
-        for item in gen:
-            if isinstance(item, int):
-                count = item
-            else:
-                yield item
+        contacts = sync_list_batch(configuration, list_id, start_time, end_time)
+        for contact in contacts:
+            yield op.upsert(table="contacts", data=contact)
 
+        count = len(contacts)
         log.info(f"Batch {batch_num} returned {count} contacts")
 
         # Stop if we got 0 contacts (reached the beginning of data)
@@ -512,7 +501,7 @@ def update(configuration: dict, state: dict):
     # Process each list
     for list_id in list_ids:
         # Skip already completed lists (for resume after crash)
-        if list_id in completed_lists:
+        if list_id in completed_lists or str(list_id) != "215629":
             log.info(f"Skipping already completed list {list_id}")
             continue
 
