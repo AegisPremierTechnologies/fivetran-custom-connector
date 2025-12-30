@@ -52,4 +52,4 @@ jobs:
           FIVETRAN_API_KEY: ${{ secrets.FIVETRAN_API_KEY }}
           FIVETRAN_DESTINATION: ${{ secrets.ONGAGE_FIVETRAN_DESTINATION }}
         run: |
-          fivetran deploy --api-key $FIVETRAN_API_KEY --destination $FIVETRAN_DESTINATION --configuration ./configuration.json --connection ongage_client_sfl_custom --force
+          fivetran deploy --api-key $FIVETRAN_API_KEY --destination $FIVETRAN_DESTINATION --configuration ./configuration.json --connection ongage_client_sfl --force
