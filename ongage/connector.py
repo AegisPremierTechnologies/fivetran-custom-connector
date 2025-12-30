@@ -378,7 +378,7 @@ def create_contact_search_with_range(
 
 
 # Constants for batching
-BATCH_MONTHS = 6
+BATCH_MONTHS = 8
 SECONDS_PER_MONTH = 30 * 24 * 60 * 60  # ~30 days
 LARGE_LIST_THRESHOLD = (
     200000  # Lists with more contacts than this will use batched sync
@@ -501,7 +501,7 @@ def update(configuration: dict, state: dict):
     # Process each list
     for list_id in list_ids:
         # Skip already completed lists (for resume after crash)
-        if list_id in completed_lists or str(list_id) != "215629":
+        if list_id in completed_lists:
             log.info(f"Skipping already completed list {list_id}")
             continue
 
