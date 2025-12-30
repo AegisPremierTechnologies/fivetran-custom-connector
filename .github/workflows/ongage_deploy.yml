@@ -1,0 +1,50 @@
+name: Deploy OnGage Connector
+# Trigger the workflow on push or pull request events to the main branch
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ongage/**"
+      - ".github/workflows/ongage_deploy.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install fivetran-connector-sdk
+
+      - name: Create configuration.json
+        working-directory: "./ongage"
+        env:
+          SFL_ONGAGE_USERNAME: ${{ secrets.SFL_ONGAGE_USERNAME }}
+          SFL_ONGAGE_PASSWORD: ${{ secrets.SFL_ONGAGE_PASSWORD }}
+          SFL_ONGAGE_ACCOUNT_CODE: ${{ secrets.SFL_ONGAGE_ACCOUNT_CODE }}
+        run: |
+          echo "Creating configuration.json with provided secrets..."
+          cat <<EOF > configuration.json
+          {
+            "x_username": "$SFL_ONGAGE_USERNAME",
+            "x_password": "$SFL_ONGAGE_PASSWORD",
+            "x_account_code": "$SFL_ONGAGE_ACCOUNT_CODE"
+          }
+          EOF
+
+      - name: Deploy to Fivetran
+        working-directory: "./ongage"
+        env:
+          FIVETRAN_API_KEY: ${{ secrets.FIVETRAN_API_KEY }}
+          FIVETRAN_DESTINATION: ${{ secrets.ONGAGE_FIVETRAN_DESTINATION }}
+        run: |
+          fivetran deploy --api-key $FIVETRAN_API_KEY --destination $FIVETRAN_DESTINATION --configuration ./configuration.json --connection ongage_client_sfl_custom --force
