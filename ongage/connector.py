@@ -291,17 +291,19 @@ def export_contacts(configuration: dict, list_id: str, search_id: str):
     return contacts
 
 
-def sync_list(configuration: dict, list_id: str, last_sync_time: int | None):
-    """Sync contacts for a single list. Yields upsert operations."""
-    log.info(f"Syncing list {list_id}")
+def sync_list_batch(configuration: dict, list_id: str, start_time: int, end_time: int):
+    """Sync contacts for a single list within a date range. Yields upsert operations."""
+    log.info(f"Syncing list {list_id} from {start_time} to {end_time}")
 
-    # Create contact search
-    search_id = create_contact_search(configuration, list_id, last_sync_time)
+    # Create contact search with date range
+    search_id = create_contact_search_with_range(
+        configuration, list_id, start_time, end_time
+    )
 
     # Wait for search to complete
     if not wait_for_search_completion(configuration, list_id, search_id):
         log.warning(f"Contact search did not complete successfully for list {list_id}")
-        return
+        return 0
 
     # Export and process contacts
     contacts = export_contacts(configuration, list_id, search_id)
@@ -310,6 +312,161 @@ def sync_list(configuration: dict, list_id: str, last_sync_time: int | None):
         yield op.upsert(table="contacts", data=contact)
 
     log.info(f"Synced {len(contacts)} contacts from list {list_id}")
+    return len(contacts)
+
+
+def create_contact_search_with_range(
+    configuration: dict, list_id: str, start_time: int | None, end_time: int | None
+) -> str:
+    """Create a contact search with explicit date range and return the search ID."""
+    base_url = get_base_url(list_id)
+    headers = get_headers(configuration)
+
+    # Base criteria: email is not empty (to get all contacts)
+    criteria = [
+        {
+            "type": "email",
+            "field_name": "email",
+            "operator": "notempty",
+            "operand": [""],
+            "case_sensitive": 0,
+            "condition": "and",
+        }
+    ]
+
+    # Add date filters
+    if start_time is not None:
+        criteria.append(
+            {
+                "type": "date_absolute",
+                "field_name": "ocx_created_date",
+                "operator": ">=",
+                "operand": [start_time],
+                "case_sensitive": 0,
+                "condition": "and",
+            }
+        )
+    if end_time is not None:
+        criteria.append(
+            {
+                "type": "date_absolute",
+                "field_name": "ocx_created_date",
+                "operator": "<",
+                "operand": [end_time],
+                "case_sensitive": 0,
+                "condition": "and",
+            }
+        )
+
+    payload = {
+        "title": f"Fivetran Sync {datetime.utcnow().isoformat()}",
+        "include_behavior": False,
+        "filters": {
+            "type": "Active",
+            "criteria": criteria,
+            "user_type": "all",
+        },
+        "combined_as_and": True,
+    }
+
+    log.info(f"Creating contact search for list {list_id}")
+    response = rq.post(f"{base_url}/contact_search", headers=headers, json=payload)
+    response.raise_for_status()
+
+    data = response.json()
+    search_id = data["payload"]["id"]
+    log.info(f"Created contact search with ID: {search_id}")
+    return search_id
+
+
+# Constants for batching
+BATCH_MONTHS = 6
+SECONDS_PER_MONTH = 30 * 24 * 60 * 60  # ~30 days
+LARGE_LIST_THRESHOLD = (
+    200000  # Lists with more contacts than this will use batched sync
+)
+
+
+def sync_list(
+    configuration: dict, list_id: str, last_sync_time: int | None, list_count: int = 0
+):
+    """Sync contacts for a single list. Yields upsert operations.
+
+    For initial sync of large lists (> 200k), uses 6-month batches working backwards.
+    For smaller lists or incremental sync, fetches all at once.
+    """
+    log.info(f"Syncing list {list_id}")
+
+    # Check for debug mode override
+    debug_start = configuration.get("debug_start_date")
+    if debug_start:
+        start_dt = datetime.strptime(debug_start, "%Y-%m-%d")
+        start_time = int(start_dt.timestamp())
+        end_time = None
+        debug_end = configuration.get("debug_end_date")
+        if debug_end:
+            end_dt = datetime.strptime(debug_end, "%Y-%m-%d")
+            end_time = int(end_dt.timestamp())
+        log.info(f"Debug mode: filtering contacts from {debug_start} to {debug_end}")
+
+        # Single batch for debug mode
+        gen = sync_list_batch(configuration, list_id, start_time, end_time)
+        count = 0
+        for item in gen:
+            if isinstance(item, int):
+                count = item
+            else:
+                yield item
+        return
+
+    if last_sync_time is not None:
+        # Incremental sync: fetch all since last sync
+        gen = sync_list_batch(configuration, list_id, last_sync_time, None)
+        for item in gen:
+            if not isinstance(item, int):
+                yield item
+        return
+
+    # Initial sync: check if list is large enough to require batching
+    if list_count < LARGE_LIST_THRESHOLD:
+        log.info(f"List {list_id} has {list_count} contacts, syncing all at once")
+        gen = sync_list_batch(configuration, list_id, None, None)
+        for item in gen:
+            if not isinstance(item, int):
+                yield item
+        return
+
+    # Large list: batch by 6-month windows working backwards
+    log.info(f"List {list_id} has {list_count} contacts, using batched sync")
+    current_time = int(datetime.utcnow().timestamp())
+    batch_size = BATCH_MONTHS * SECONDS_PER_MONTH
+
+    end_time = current_time
+    batch_num = 0
+
+    while True:
+        start_time = end_time - batch_size
+        batch_num += 1
+
+        log.info(f"Processing batch {batch_num} for list {list_id}")
+
+        gen = sync_list_batch(configuration, list_id, start_time, end_time)
+        count = 0
+        for item in gen:
+            if isinstance(item, int):
+                count = item
+            else:
+                yield item
+
+        log.info(f"Batch {batch_num} returned {count} contacts")
+
+        # Stop if we got 0 contacts (reached the beginning of data)
+        if count == 0:
+            log.info(f"No more contacts found for list {list_id}, stopping batches")
+            break
+
+        # Move window backwards
+        end_time = start_time
 
 
 def update(configuration: dict, state: dict):
@@ -359,8 +516,12 @@ def update(configuration: dict, state: dict):
             log.info(f"Skipping already completed list {list_id}")
             continue
 
+        # Find the list info to get count
+        list_info = next((lst for lst in lists if str(lst.get("id")) == list_id), {})
+        list_count = list_info.get("last_count", 0) or 0
+
         # Sync this list
-        yield from sync_list(configuration, list_id, last_sync_time)
+        yield from sync_list(configuration, list_id, last_sync_time, list_count)
 
         # Checkpoint after each list
         completed_lists.append(list_id)
