@@ -6,6 +6,11 @@ on:
     paths:
       - "ongage/**"
       - ".github/workflows/ongage_deploy.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "ongage/**"
+      - ".github/workflows/ongage_deploy.yml"
 
 jobs:
   build:
