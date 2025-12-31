@@ -378,7 +378,7 @@ def create_contact_search_with_range(
 
 
 # Constants for batching
-BATCH_MONTHS = 8
+BATCH_MONTHS = 6
 SECONDS_PER_MONTH = 30 * 24 * 60 * 60  # ~30 days
 LARGE_LIST_THRESHOLD = (
     200000  # Lists with more contacts than this will use batched sync
@@ -463,7 +463,9 @@ def update(configuration: dict, state: dict):
 
     # Get all available lists
     lists = get_all_lists(configuration)
-    list_ids = sorted([str(lst.get("id")) for lst in lists if lst.get("id")])
+    list_ids = sorted(
+        [str(lst.get("id")) for lst in lists if lst.get("id")], reverse=True, key=int
+    )
 
     log.info(f"Lists to sync: {list_ids}")
 
