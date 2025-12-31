@@ -110,7 +110,7 @@ def update(configuration: dict, state: dict):
     # Process each list
     for list_id in list_ids:
         # Skip already completed lists (for resume after crash)
-        if list_id in completed_lists or str(list_id) != "215629":
+        if list_id in completed_lists:
             log.info(f"Skipping already completed list {list_id}")
             continueZ
 
