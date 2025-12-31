@@ -145,8 +145,8 @@ def sync_list_batched(configuration: dict, list_id: str):
             configuration, list_id, start_time, end_time
         )
 
-        # for contact in contacts:
-        # yield op.upsert(table="contacts", data=contact)
+        for contact in contacts:
+            yield op.upsert(table="contacts", data=contact)
 
         count = len(contacts)
         log.info(f"Batch {batch_num} returned {count} contacts")
