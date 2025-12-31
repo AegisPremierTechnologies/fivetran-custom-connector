@@ -463,9 +463,7 @@ def update(configuration: dict, state: dict):
 
     # Get all available lists
     lists = get_all_lists(configuration)
-    list_ids = sorted(
-        [str(lst.get("id")) for lst in lists if lst.get("id")], reverse=True, key=int
-    )
+    list_ids = sorted([str(lst.get("id")) for lst in lists if lst.get("id")], key=int)
 
     log.info(f"Lists to sync: {list_ids}")
 
