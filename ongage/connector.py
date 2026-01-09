@@ -112,7 +112,7 @@ def update(configuration: dict, state: dict):
         # Skip already completed lists (for resume after crash)
         if list_id in completed_lists:
             log.info(f"Skipping already completed list {list_id}")
-            continueZ
+            continue
 
         # Find the list info to get count
         list_info = next((lst for lst in lists if str(lst.get("id")) == list_id), {})
