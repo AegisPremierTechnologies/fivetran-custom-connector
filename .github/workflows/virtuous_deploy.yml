@@ -1,0 +1,50 @@
+name: Deploy Virtuous Connector
+on:
+  push:
+    branches: [main]
+    paths:
+      - "virtuous/**"
+      - ".github/workflows/virtuous_deploy.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "virtuous/**"
+      - ".github/workflows/virtuous_deploy.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install fivetran-connector-sdk
+
+      - name: Create configuration.json
+        working-directory: "./virtuous"
+        env:
+          SFL_VIRTUOUS_BEARER_TOKEN: ${{ secrets.SFL_VIRTUOUS_BEARER_TOKEN }}
+        run: |
+          echo "Creating configuration.json with provided secrets..."
+          cat <<EOF > configuration.json
+          {
+            "bearer_token": "$SFL_VIRTUOUS_BEARER_TOKEN"
+          }
+          EOF
+
+      - name: Deploy to Fivetran
+        working-directory: "./virtuous"
+        env:
+          FIVETRAN_API_KEY: ${{ secrets.FIVETRAN_API_KEY }}
+          FIVETRAN_DESTINATION: ${{ secrets.VIRTUOUS_FIVETRAN_DESTINATION }}
+        run: |
+          fivetran deploy --api-key $FIVETRAN_API_KEY --destination $FIVETRAN_DESTINATION --configuration ./configuration.json --connection virtuous_client_sfl --force
