@@ -231,22 +231,33 @@ def update(configuration: dict, state: dict):
         else:
             log.info("Performing initial sync (all records)")
 
-    # Sync gifts
-    log.info("Syncing gifts...")
-    yield from sync_gifts(
-        configuration, modified_since=modified_since, modified_until=debug_end
-    )
+    # Sync gifts (if not already complete in this run)
+    if not state.get("gifts_complete"):
+        log.info("Syncing gifts...")
+        yield from sync_gifts(
+            configuration,
+            state=state,
+            modified_since=modified_since,
+            modified_until=debug_end,
+        )
+        state["gifts_complete"] = True
+        yield op.checkpoint(state=state)
+    else:
+        log.info("Gifts already synced in previous run, skipping...")
 
-    # Checkpoint after gifts
-    yield op.checkpoint(
-        state={"last_sync_time": modified_since, "gifts_complete": True}
-    )
-
-    # Sync contacts
-    log.info("Syncing contacts...")
-    yield from sync_contacts(
-        configuration, modified_since=modified_since, modified_until=debug_end
-    )
+    # Sync contacts (if not already complete in this run)
+    if not state.get("contacts_complete"):
+        log.info("Syncing contacts...")
+        yield from sync_contacts(
+            configuration,
+            state=state,
+            modified_since=modified_since,
+            modified_until=debug_end,
+        )
+        state["contacts_complete"] = True
+        yield op.checkpoint(state=state)
+    else:
+        log.info("Contacts already synced in previous run, skipping...")
 
     # Final checkpoint with new sync time
     # If debug mode with end date specified, use that as the cursor so next run picks up from there
@@ -258,7 +269,12 @@ def update(configuration: dict, state: dict):
     else:
         next_sync_time = datetime.utcnow().strftime("%Y-%m-%d")
 
-    yield op.checkpoint(state={"last_sync_time": next_sync_time})
+    # Reset completion flags and update sync time for next run
+    final_state = {
+        "last_sync_time": next_sync_time,
+        # Clear all intermediate state for clean next run
+    }
+    yield op.checkpoint(state=final_state)
 
     log.info(
         f"Sync completed. Next sync will fetch records modified since {next_sync_time}"
