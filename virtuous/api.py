@@ -179,7 +179,7 @@ def request_with_retry(
                 headers=headers,
                 params=params,
                 json=json,
-                timeout=120,  # 2 minute timeout
+                timeout=600,  # 10 minute timeout
             )
 
             # Check if we need to retry
