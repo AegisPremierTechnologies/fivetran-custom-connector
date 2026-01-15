@@ -93,7 +93,7 @@ def sync_gifts(
         Updated state dict
     """
     # Resume from state if available
-    skip = state.get("gifts_skip", 1460000)
+    skip = state.get("gifts_skip", 0)
     total_synced = state.get("gifts_total_synced", 0)
 
     if skip > 0:
