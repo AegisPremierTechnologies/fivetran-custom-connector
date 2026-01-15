@@ -255,6 +255,9 @@ def request_with_retry(
                         f"Connection error for {context}. "
                         f"Attempt {attempt + 1}/{MAX_RETRIES + 1}. "
                         f"Retrying in {backoff:.1f}s... Error: {e}"
+                        f"Rate limit: {remaining}/{limit}"
+                        if remaining is not None
+                        else "Rate limit: unknown"
                     )
                     time.sleep(backoff)
                     continue
