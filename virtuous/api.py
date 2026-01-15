@@ -1,8 +1,8 @@
-"""Virtuous API client for Fivetran connector with retry logic."""
+"""Virtuous API client for Fivetran connector with retry and rate limit handling."""
 
 import random
 import time
-from typing import Optional
+from typing import Optional, Tuple
 
 import requests as rq
 from requests.exceptions import HTTPError, RequestException
@@ -19,6 +19,9 @@ MAX_BACKOFF_SECONDS = 60
 BACKOFF_MULTIPLIER = 2
 JITTER_RANGE = 0.5  # Add random jitter up to 50% of backoff
 
+# Rate limit configuration
+RATE_LIMIT_THRESHOLD = 10  # Proactively pause when remaining requests drop below this
+
 
 def get_headers(configuration: dict) -> dict:
     """Build request headers with Bearer token authentication."""
@@ -27,6 +30,76 @@ def get_headers(configuration: dict) -> dict:
         "Accept": "application/json",
         "Content-Type": "application/json",
     }
+
+
+def _parse_rate_limit_headers(
+    response: rq.Response,
+) -> Tuple[Optional[int], Optional[int], Optional[int]]:
+    """Parse rate limit headers from response.
+
+    Args:
+        response: HTTP response object
+
+    Returns:
+        Tuple of (limit, remaining, reset_timestamp)
+        Any value may be None if header is missing
+    """
+    headers = response.headers
+
+    limit = headers.get("X-RateLimit-Limit")
+    remaining = headers.get("X-RateLimit-Remaining")
+    reset_ts = headers.get("X-RateLimit-Reset")
+
+    return (
+        int(limit) if limit else None,
+        int(remaining) if remaining else None,
+        int(reset_ts) if reset_ts else None,
+    )
+
+
+def _get_rate_limit_backoff(reset_timestamp: Optional[int]) -> float:
+    """Calculate how long to wait until rate limit resets.
+
+    Args:
+        reset_timestamp: Unix timestamp when rate limit resets
+
+    Returns:
+        Seconds to wait (minimum 1 second, maximum MAX_BACKOFF_SECONDS)
+    """
+    if reset_timestamp is None:
+        return INITIAL_BACKOFF_SECONDS
+
+    now = time.time()
+    wait_time = reset_timestamp - now
+
+    # Add a small buffer
+    wait_time += 1
+
+    # Clamp to reasonable bounds
+    return max(1, min(wait_time, MAX_BACKOFF_SECONDS))
+
+
+def _check_rate_limit(response: rq.Response, context: str = "") -> None:
+    """Check rate limit headers, log status, and proactively sleep if running low.
+
+    Args:
+        response: HTTP response to check
+        context: Context string for logging
+    """
+    limit, remaining, reset_ts = _parse_rate_limit_headers(response)
+
+    # Always log rate limit status for visibility
+    if remaining is not None and limit is not None:
+        log.info(f"Rate limit status: {remaining}/{limit} remaining ({context})")
+
+    if remaining is not None and remaining < RATE_LIMIT_THRESHOLD:
+        wait_time = _get_rate_limit_backoff(reset_ts)
+        log.warning(
+            f"Rate limit running low for {context}. "
+            f"Remaining: {remaining}/{limit}. "
+            f"Proactively sleeping for {wait_time:.1f}s until reset..."
+        )
+        time.sleep(wait_time)
 
 
 def _is_retryable_error(status_code: int) -> bool:
@@ -42,16 +115,24 @@ def _is_retryable_error(status_code: int) -> bool:
     return status_code in (429, 500, 502, 503, 504)
 
 
-def _calculate_backoff(attempt: int) -> float:
+def _calculate_backoff(attempt: int, reset_timestamp: Optional[int] = None) -> float:
     """Calculate backoff time with exponential increase and jitter.
+
+    If a rate limit reset timestamp is provided, uses that instead of
+    exponential backoff for more precise timing.
 
     Args:
         attempt: The current retry attempt (0-indexed)
+        reset_timestamp: Optional Unix timestamp when rate limit resets
 
     Returns:
         Backoff time in seconds
     """
-    # Exponential backoff: 2, 4, 8, 16, 32, ...
+    # If we have a reset timestamp (from rate limit), use it
+    if reset_timestamp is not None:
+        return _get_rate_limit_backoff(reset_timestamp)
+
+    # Otherwise use exponential backoff: 2, 4, 8, 16, 32, ...
     backoff = INITIAL_BACKOFF_SECONDS * (BACKOFF_MULTIPLIER**attempt)
 
     # Cap at max backoff
@@ -71,7 +152,7 @@ def request_with_retry(
     json: Optional[dict] = None,
     context: str = "",
 ) -> rq.Response:
-    """Make an HTTP request with exponential backoff retry logic.
+    """Make an HTTP request with exponential backoff retry logic and rate limit handling.
 
     Args:
         method: HTTP method ('GET', 'POST', etc.)
@@ -103,11 +184,22 @@ def request_with_retry(
 
             # Check if we need to retry
             if _is_retryable_error(response.status_code):
-                backoff = _calculate_backoff(attempt)
+                # Get rate limit info for logging
+                limit, remaining, reset_ts = _parse_rate_limit_headers(response)
+                rate_info = (
+                    f"Rate limit: {remaining}/{limit}"
+                    if remaining is not None
+                    else "Rate limit: unknown"
+                )
+
+                backoff = _calculate_backoff(
+                    attempt, reset_ts if response.status_code == 429 else None
+                )
 
                 if attempt < MAX_RETRIES:
                     log.warning(
                         f"Retryable error {response.status_code} for {context}. "
+                        f"{rate_info}. "
                         f"Attempt {attempt + 1}/{MAX_RETRIES + 1}. "
                         f"Retrying in {backoff:.1f}s..."
                     )
@@ -116,11 +208,13 @@ def request_with_retry(
                 else:
                     log.severe(
                         f"Max retries ({MAX_RETRIES}) exhausted for {context}. "
-                        f"Last status: {response.status_code}"
+                        f"Last status: {response.status_code}. {rate_info}"
                     )
                     response.raise_for_status()
 
-            # Success or non-retryable error
+            # Success - check rate limit headers and proactively pause if running low
+            _check_rate_limit(response, context)
+
             response.raise_for_status()
             return response
 
@@ -131,9 +225,22 @@ def request_with_retry(
             if isinstance(e, HTTPError) and e.response is not None:
                 if _is_retryable_error(e.response.status_code):
                     if attempt < MAX_RETRIES:
-                        backoff = _calculate_backoff(attempt)
+                        # Get rate limit info for logging
+                        limit, remaining, reset_ts = _parse_rate_limit_headers(
+                            e.response
+                        )
+                        rate_info = (
+                            f"Rate limit: {remaining}/{limit}"
+                            if remaining is not None
+                            else "Rate limit: unknown"
+                        )
+
+                        backoff = _calculate_backoff(
+                            attempt, reset_ts if e.response.status_code == 429 else None
+                        )
                         log.warning(
                             f"Retryable HTTPError for {context}. "
+                            f"{rate_info}. "
                             f"Attempt {attempt + 1}/{MAX_RETRIES + 1}. "
                             f"Retrying in {backoff:.1f}s... Error: {e}"
                         )
