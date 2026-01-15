@@ -25,7 +25,7 @@ PAGE_SIZE = 1000  # Max allowed by Virtuous API
 BATCH_SIZE = (
     20000  # Number of rows to accumulate before yielding upserts and checkpointing
 )
-PARALLEL_REQUESTS = 4  # Number of concurrent API requests
+PARALLEL_REQUESTS = 10  # Number of concurrent API requests
 
 
 def _fetch_gifts_page(
