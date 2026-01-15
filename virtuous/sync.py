@@ -23,7 +23,7 @@ from models import (
 # Pagination configuration
 PAGE_SIZE = 500  # Max allowed by Virtuous API
 BATCH_SIZE = (
-    20000  # Number of rows to accumulate before yielding upserts and checkpointing
+    4000  # Number of rows to accumulate before yielding upserts and checkpointing
 )
 PARALLEL_REQUESTS = 4  # Number of concurrent API requests
 
