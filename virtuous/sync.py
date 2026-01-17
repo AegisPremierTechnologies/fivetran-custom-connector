@@ -21,7 +21,7 @@ from models import (
 
 
 # Pagination configuration
-PAGE_SIZE = 1000  # Max allowed by Virtuous API
+PAGE_SIZE = 500  # Max allowed by Virtuous API
 BATCH_SIZE = (
     4000  # Number of rows to accumulate before yielding upserts and checkpointing
 )
