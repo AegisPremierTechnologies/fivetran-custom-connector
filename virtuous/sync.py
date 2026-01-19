@@ -21,7 +21,7 @@ from models import (
 
 
 # Pagination configuration
-PAGE_SIZE = 500  # Max allowed by Virtuous API
+PAGE_SIZE = 1000  # Max allowed by Virtuous API
 BATCH_SIZE = (
     4000  # Number of rows to accumulate before yielding upserts and checkpointing
 )
@@ -113,17 +113,38 @@ def _migrate_skip_to_date_cursor(
     return state
 
 
+def _fetch_gifts_page(
+    configuration: dict,
+    skip: int,
+    modified_since: Optional[str],
+    modified_until: Optional[str],
+    gift_date_since: Optional[str],
+) -> Tuple[int, list]:
+    """Fetch a single page of gifts. Returns (skip, gifts_list)."""
+    response = query_gifts(
+        configuration,
+        skip=skip,
+        take=PAGE_SIZE,
+        modified_since=modified_since,
+        modified_until=modified_until,
+        gift_date_since=gift_date_since,
+    )
+    # Handle response structure - may be {"list": [...]} or just [...]
+    gifts = response.get("list", response) if isinstance(response, dict) else response
+    return (skip, gifts or [])
+
+
 def sync_gifts(
     configuration: dict,
     state: dict,
     modified_since: Optional[str] = None,
     modified_until: Optional[str] = None,
 ) -> Generator[Any, None, dict]:
-    """Sync all gifts with date-based cursor and batch checkpointing.
+    """Sync all gifts with parallel fetching and date-based cursor.
 
     Uses Gift Date as the primary cursor to avoid large SKIP values that can
-    cause server-side 500 errors. Within a single date, uses skip pagination
-    to handle days with many gifts.
+    cause server-side 500 errors. Fetches PARALLEL_REQUESTS pages concurrently
+    within the date-filtered query.
 
     State variables:
     - gifts_date_cursor: Current date being synced (YYYY-MM-DD)
@@ -142,6 +163,8 @@ def sync_gifts(
     Returns:
         Updated state dict
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     # Handle migration from old skip-based state
     state = _migrate_skip_to_date_cursor(configuration, state)
 
@@ -161,78 +184,80 @@ def sync_gifts(
     batch_buffer: List[dict] = []
     is_first_record = total_synced == 0
     reached_end = False
+    last_gift_date_in_batch: Optional[str] = None
 
     while not reached_end:
-        # Fetch a page of gifts
-        log.info(f"Fetching gifts: date_cursor={date_cursor}, skip={day_skip}")
+        # Submit parallel requests
+        log.info(f"Parallel fetch: date_cursor={date_cursor}, starting skip={day_skip}")
 
-        response = query_gifts(
-            configuration,
-            skip=day_skip,
-            take=PAGE_SIZE,
-            modified_since=modified_since,
-            modified_until=modified_until,
-            gift_date_since=date_cursor,
-        )
+        with ThreadPoolExecutor(max_workers=PARALLEL_REQUESTS) as executor:
+            futures = {}
+            for i in range(PARALLEL_REQUESTS):
+                page_skip = day_skip + (i * PAGE_SIZE)
+                future = executor.submit(
+                    _fetch_gifts_page,
+                    configuration,
+                    page_skip,
+                    modified_since,
+                    modified_until,
+                    date_cursor,
+                )
+                futures[future] = page_skip
 
-        # Handle response structure
-        gifts = (
-            response.get("list", response) if isinstance(response, dict) else response
-        )
+            # Collect results
+            results: List[Tuple[int, list]] = []
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+                    results.append(result)
+                except Exception as e:
+                    log.severe(f"Error fetching gifts page: {e}")
+                    raise
 
-        if not gifts:
-            log.info(f"No more gifts returned. Reached end.")
-            reached_end = True
-            break
+        # Sort results by skip position to maintain order
+        results.sort(key=lambda x: x[0])
 
-        log.info(f"Fetched {len(gifts)} gifts")
+        log.info(f"Fetched {len(results)} pages in parallel")
 
-        # Track if we need to advance the date cursor
-        last_gift_date_in_page = None
+        # Process results in order
+        for page_skip, gifts in results:
+            if not gifts:
+                log.info(f"Empty page at skip={page_skip}, reached end")
+                reached_end = True
+                break
 
-        for i, gift in enumerate(gifts):
-            # Extract this gift's date
-            gift_date = _extract_gift_date(gift)
-            last_gift_date_in_page = gift_date
+            for i, gift in enumerate(gifts):
+                # Extract this gift's date
+                gift_date = _extract_gift_date(gift)
+                if gift_date:
+                    last_gift_date_in_batch = gift_date
 
-            batch_buffer.append(
-                {
-                    "table": "gifts",
-                    "data": format_gift(
-                        gift,
-                        debug=(is_first_record and i == 0 and len(batch_buffer) == 0),
-                    ),
-                }
-            )
+                batch_buffer.append(
+                    {
+                        "table": "gifts",
+                        "data": format_gift(
+                            gift,
+                            debug=(
+                                is_first_record and i == 0 and len(batch_buffer) == 0
+                            ),
+                        ),
+                    }
+                )
 
-        total_synced += len(gifts)
-        is_first_record = False
+            total_synced += len(gifts)
+            is_first_record = False
 
-        # Determine if we got a partial page (end of data)
-        if len(gifts) < PAGE_SIZE:
-            log.info(f"Partial page ({len(gifts)} records), reached end")
-            reached_end = True
-        else:
-            # Check if we should advance the date cursor or continue within current day
-            if last_gift_date_in_page:
-                if date_cursor is None:
-                    # First time setting cursor (fresh run)
-                    log.info(f"Setting initial date cursor to {last_gift_date_in_page}")
-                    date_cursor = last_gift_date_in_page
-                    day_skip = 0
-                elif last_gift_date_in_page > date_cursor:
-                    # Advanced to a new date - update cursor and reset skip
-                    log.info(
-                        f"Date advanced from {date_cursor} to {last_gift_date_in_page}"
-                    )
-                    date_cursor = last_gift_date_in_page
-                    day_skip = 0
-                else:
-                    # Still within same date, increment skip
-                    day_skip += PAGE_SIZE
-            else:
-                # No date extracted (shouldn't happen), fall back to skip increment
-                day_skip += PAGE_SIZE
+            # Check if this page indicates end of data
+            if len(gifts) < PAGE_SIZE:
+                log.info(
+                    f"Partial page at skip={page_skip} ({len(gifts)} records), reached end"
+                )
+                reached_end = True
+                break
+
+        # Update skip position for next parallel batch
+        if not reached_end:
+            day_skip += PARALLEL_REQUESTS * PAGE_SIZE
 
         log.info(f"Progress: total={total_synced}, buffer={len(batch_buffer)}")
 
@@ -246,6 +271,21 @@ def sync_gifts(
 
             # Clear buffer
             batch_buffer = []
+
+            # Update date cursor based on last gift in batch
+            if last_gift_date_in_batch:
+                if date_cursor is None:
+                    log.info(
+                        f"Setting initial date cursor to {last_gift_date_in_batch}"
+                    )
+                    date_cursor = last_gift_date_in_batch
+                    day_skip = 0  # Reset skip since we now have a date filter
+                elif last_gift_date_in_batch > date_cursor:
+                    log.info(
+                        f"Date cursor advanced from {date_cursor} to {last_gift_date_in_batch}"
+                    )
+                    date_cursor = last_gift_date_in_batch
+                    day_skip = 0  # Reset skip for new date
 
             # Checkpoint with current position
             state["gifts_date_cursor"] = date_cursor
