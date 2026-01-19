@@ -362,18 +362,18 @@ def query_contacts(
     take: int = 1000,
     modified_since: Optional[str] = None,
     modified_until: Optional[str] = None,
-    modified_date_cursor: Optional[str] = None,
+    id_cursor: Optional[int] = None,
 ) -> dict:
     """Query full contacts from Virtuous API with retry logic.
 
     Args:
         configuration: Connector configuration with bearer_token
-        skip: Number of records to skip (pagination)
+        skip: Number of records to skip (pagination within ID range)
         take: Number of records to return (max 1000)
         modified_since: Date string (YYYY-MM-DD) for incremental sync start
         modified_until: Date string (YYYY-MM-DD) for incremental sync end (debug mode)
-        modified_date_cursor: Date string (YYYY-MM-DD) to filter contacts with modifiedDateTimeUtc >= value
-                              Used for date-based cursor pagination to avoid large skip values.
+        id_cursor: Contact ID to filter contacts with id > value.
+                   Used for ID-based cursor pagination to avoid large skip values.
 
     Returns:
         API response with list of contacts
@@ -386,27 +386,27 @@ def query_contacts(
         "take": take,
     }
 
-    # Filter and sort criteria in body - sort by Last Modified Date for stable cursor
+    # Filter and sort criteria in body - sort by Contact Id for stable cursor
     payload = {
-        "sortBy": "Last Modified Date",
+        "sortBy": "Contact Id",
         "descending": False,
     }
 
-    # Add date filter using proper API structure
+    # Add filter using proper API structure
     conditions = []
 
-    # Last Modified Date filter for cursor-based pagination
-    if modified_date_cursor:
+    # Contact ID filter for cursor-based pagination
+    if id_cursor is not None:
         conditions.append(
             {
-                "parameter": "Last Modified Date",
-                "operator": "OnOrAfter",
-                "value": modified_date_cursor,
+                "parameter": "Contact Id",
+                "operator": "GreaterThan",
+                "value": str(id_cursor),
             }
         )
 
-    # Additional Last Modified Date filters for incremental sync (overrides cursor if set)
-    if modified_since and not modified_date_cursor:
+    # Last Modified Date filters for incremental sync
+    if modified_since:
         conditions.append(
             {
                 "parameter": "Last Modified Date",
@@ -426,7 +426,7 @@ def query_contacts(
         payload["groups"] = [{"conditions": conditions}]
 
     log.info(
-        f"Querying contacts: skip={skip}, take={take}, modifiedDateCursor={modified_date_cursor}, modifiedSince={modified_since}"
+        f"Querying contacts: skip={skip}, take={take}, idCursor={id_cursor}, modifiedSince={modified_since}"
     )
 
     response = request_with_retry(

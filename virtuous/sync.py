@@ -237,26 +237,12 @@ def sync_gifts(
     return state
 
 
-def _extract_contact_modified_date(contact: dict) -> Optional[str]:
-    """Extract modifiedDateTimeUtc from a contact record and return as YYYY-MM-DD string."""
-    modified_date = contact.get("modifiedDateTimeUtc")
-    if not modified_date:
-        return None
-    try:
-        from dateutil import parser as date_parser
-
-        dt = date_parser.parse(modified_date)
-        return dt.strftime("%Y-%m-%d")
-    except (ValueError, TypeError):
-        return None
-
-
 def _fetch_contacts_page(
     configuration: dict,
     skip: int,
     modified_since: Optional[str],
     modified_until: Optional[str],
-    modified_date_cursor: Optional[str],
+    id_cursor: Optional[int],
 ) -> Tuple[int, list]:
     """Fetch a single page of contacts. Returns (skip, contacts_list)."""
     response = query_contacts(
@@ -265,7 +251,7 @@ def _fetch_contacts_page(
         take=PAGE_SIZE,
         modified_since=modified_since,
         modified_until=modified_until,
-        modified_date_cursor=modified_date_cursor,
+        id_cursor=id_cursor,
     )
     # Handle response structure - may be {"list": [...]} or just [...]
     contacts = (
@@ -280,15 +266,14 @@ def sync_contacts(
     modified_since: Optional[str] = None,
     modified_until: Optional[str] = None,
 ) -> Generator[Any, None, dict]:
-    """Sync all contacts and related entities with parallel fetching and date-based cursor.
+    """Sync all contacts and related entities with parallel fetching and ID-based cursor.
 
-    Uses Last Modified Date as the primary cursor to avoid large SKIP values that can
+    Uses Contact ID as the primary cursor to avoid large SKIP values that can
     cause server-side 500 errors. Fetches PARALLEL_REQUESTS pages concurrently
-    within the date-filtered query.
+    within the ID-filtered query.
 
     State variables:
-    - contacts_date_cursor: Current date being synced (YYYY-MM-DD)
-    - contacts_day_skip: Skip offset within the current date
+    - contacts_id_cursor: Last synced contact ID
     - contacts_total_synced: Running total of synced contacts
 
     Yields upsert operations for:
@@ -299,7 +284,7 @@ def sync_contacts(
 
     Args:
         configuration: Connector configuration
-        state: Current sync state (may contain old contacts_skip for migration)
+        state: Current sync state
         modified_since: ISO datetime string for incremental sync start (None for full sync)
         modified_until: ISO datetime string for incremental sync end (debug mode)
 
@@ -311,44 +296,41 @@ def sync_contacts(
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    # Initialize state variables
-    date_cursor = state.get("contacts_date_cursor")
-    day_skip = state.get("contacts_day_skip", 0)
+    # Initialize state variables - ID cursor is an int (or None for fresh start)
+    id_cursor = state.get("contacts_id_cursor")
     total_contacts = state.get("contacts_total_synced", 0)
     total_individuals = 0
     total_addresses = 0
     total_methods = 0
 
-    if date_cursor:
+    if id_cursor is not None:
         log.info(
-            f"Resuming contacts sync from date={date_cursor}, day_skip={day_skip}, total_contacts={total_contacts}"
+            f"Resuming contacts sync from id_cursor={id_cursor}, total_contacts={total_contacts}"
         )
     else:
-        log.info(f"Starting fresh contacts sync (no date cursor)")
+        log.info(f"Starting fresh contacts sync (no ID cursor)")
 
     # Buffer for accumulating rows before batch yield
     batch_buffer: List[dict] = []
     is_first_record = total_contacts == 0
     reached_end = False
-    last_contact_date_in_batch: Optional[str] = None
+    last_contact_id_in_batch: Optional[int] = None
 
     while not reached_end:
-        # Submit parallel requests
-        log.info(
-            f"Parallel fetch contacts: date_cursor={date_cursor}, starting skip={day_skip}"
-        )
+        # Submit parallel requests - always start skip at 0 since ID cursor handles position
+        log.info(f"Parallel fetch contacts: id_cursor={id_cursor}, skip=0")
 
         with ThreadPoolExecutor(max_workers=PARALLEL_REQUESTS) as executor:
             futures = {}
             for i in range(PARALLEL_REQUESTS):
-                page_skip = day_skip + (i * PAGE_SIZE)
+                page_skip = i * PAGE_SIZE
                 future = executor.submit(
                     _fetch_contacts_page,
                     configuration,
                     page_skip,
                     modified_since,
                     modified_until,
-                    date_cursor,
+                    id_cursor,
                 )
                 futures[future] = page_skip
 
@@ -375,13 +357,17 @@ def sync_contacts(
                 break
 
             for i, contact in enumerate(contacts):
-                contact_id = str(contact.get("id", ""))
+                contact_id = contact.get("id")
+                contact_id_str = str(contact_id) if contact_id else ""
                 debug = is_first_record and i == 0 and len(batch_buffer) == 0
 
-                # Extract modified date for cursor tracking
-                contact_date = _extract_contact_modified_date(contact)
-                if contact_date:
-                    last_contact_date_in_batch = contact_date
+                # Track highest ID in batch for cursor
+                if contact_id is not None:
+                    if (
+                        last_contact_id_in_batch is None
+                        or contact_id > last_contact_id_in_batch
+                    ):
+                        last_contact_id_in_batch = contact_id
 
                 # 1. Add main contact record to buffer
                 batch_buffer.append(
@@ -398,7 +384,7 @@ def sync_contacts(
                     batch_buffer.append(
                         {
                             "table": "addresses",
-                            "data": format_address(address, contact_id),
+                            "data": format_address(address, contact_id_str),
                         }
                     )
                     total_addresses += 1
@@ -411,7 +397,7 @@ def sync_contacts(
                     batch_buffer.append(
                         {
                             "table": "individuals",
-                            "data": format_individual(individual, contact_id),
+                            "data": format_individual(individual, contact_id_str),
                         }
                     )
                     total_individuals += 1
@@ -423,7 +409,7 @@ def sync_contacts(
                             {
                                 "table": "contact_methods",
                                 "data": format_contact_method(
-                                    method, contact_id, individual_id
+                                    method, contact_id_str, individual_id
                                 ),
                             }
                         )
@@ -439,17 +425,19 @@ def sync_contacts(
                 reached_end = True
                 break
 
-        # Update skip position for next parallel batch
-        if not reached_end:
-            day_skip += PARALLEL_REQUESTS * PAGE_SIZE
+        # Update ID cursor for next batch (filter by ID > last_id)
+        if last_contact_id_in_batch is not None:
+            id_cursor = last_contact_id_in_batch
 
         log.info(
-            f"Progress: contacts={total_contacts}, individuals={total_individuals}, buffer={len(batch_buffer)}"
+            f"Progress: contacts={total_contacts}, individuals={total_individuals}, buffer={len(batch_buffer)}, last_id={last_contact_id_in_batch}"
         )
 
         # Check if we should yield batch and checkpoint
         if len(batch_buffer) >= BATCH_SIZE:
-            log.info(f"Yielding batch of {len(batch_buffer)} rows and checkpointing")
+            log.info(
+                f"Yielding batch of {len(batch_buffer)} rows and checkpointing at id_cursor={id_cursor}"
+            )
 
             # Yield all buffered upserts
             for item in batch_buffer:
@@ -458,24 +446,8 @@ def sync_contacts(
             # Clear buffer
             batch_buffer = []
 
-            # Update date cursor based on last contact in batch
-            if last_contact_date_in_batch:
-                if date_cursor is None:
-                    log.info(
-                        f"Setting initial contacts date cursor to {last_contact_date_in_batch}"
-                    )
-                    date_cursor = last_contact_date_in_batch
-                    day_skip = 0  # Reset skip since we now have a date filter
-                elif last_contact_date_in_batch > date_cursor:
-                    log.info(
-                        f"Contacts date cursor advanced from {date_cursor} to {last_contact_date_in_batch}"
-                    )
-                    date_cursor = last_contact_date_in_batch
-                    day_skip = 0  # Reset skip for new date
-
-            # Checkpoint with current position
-            state["contacts_date_cursor"] = date_cursor
-            state["contacts_day_skip"] = day_skip
+            # Checkpoint with current ID position
+            state["contacts_id_cursor"] = id_cursor
             state["contacts_total_synced"] = total_contacts
             yield op.checkpoint(state=state)
 
@@ -493,8 +465,7 @@ def sync_contacts(
 
     # Mark contacts as complete and clear cursor fields
     state["contacts_complete"] = True
-    state.pop("contacts_date_cursor", None)
-    state.pop("contacts_day_skip", None)
+    state.pop("contacts_id_cursor", None)
     state.pop("contacts_total_synced", None)
 
     return state
