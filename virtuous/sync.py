@@ -22,8 +22,10 @@ from models import (
 
 # Pagination configuration
 PAGE_SIZE = 1000  # Max allowed by Virtuous API
-BATCH_SIZE = 4  # Number of rows to accumulate before yielding upserts and checkpointing
-PARALLEL_REQUESTS = 4  # Number of concurrent API requests
+BATCH_SIZE = (
+    8000  # Number of rows to accumulate before yielding upserts and checkpointing
+)
+PARALLEL_REQUESTS = 8  # Number of concurrent API requests
 
 
 def _extract_gift_date(gift: dict) -> Optional[str]:
@@ -39,76 +41,6 @@ def _extract_gift_date(gift: dict) -> Optional[str]:
         return dt.strftime("%Y-%m-%d")
     except (ValueError, TypeError):
         return None
-
-
-def _migrate_skip_to_date_cursor(
-    configuration: dict,
-    state: dict,
-) -> dict:
-    """Migrate from skip-based state to date-based cursor state.
-
-    When old-style state is detected (has gifts_skip but no gifts_date_cursor),
-    this function fetches a single gift at the current skip position to extract
-    its giftDate, then converts the state to use date-based pagination.
-
-    Args:
-        configuration: Connector configuration
-        state: Current state dict (may contain old-style gifts_skip)
-
-    Returns:
-        Migrated state dict with date-based cursor fields
-
-    Raises:
-        RuntimeError: If migration fails (no gift found or date extraction fails)
-    """
-    old_skip = state.get("gifts_skip", 0)
-    has_old_state = old_skip > 0 and "gifts_date_cursor" not in state
-
-    if not has_old_state:
-        return state
-
-    log.info(f"Migrating from skip-based to date-based cursor. Old skip={old_skip}")
-    log.info(f"Fetching single gift at skip={old_skip} to extract date...")
-
-    # Fetch a single gift at the current skip position
-    response = query_gifts(
-        configuration,
-        skip=old_skip,
-        take=1,
-        modified_since=None,
-        modified_until=None,
-    )
-
-    # Handle response structure
-    gifts = response.get("list", response) if isinstance(response, dict) else response
-
-    if not gifts:
-        raise RuntimeError(
-            f"STATE MIGRATION FAILED: No gift found at skip={old_skip}. "
-            f"Cannot migrate to date-based cursor. "
-            f"Current state: {state}"
-        )
-
-    # Extract the gift date
-    gift = gifts[0]
-    gift_date = _extract_gift_date(gift)
-
-    if not gift_date:
-        raise RuntimeError(
-            f"STATE MIGRATION FAILED: Could not extract giftDate from gift at skip={old_skip}. "
-            f"Gift data: {gift}. "
-            f"Cannot migrate to date-based cursor."
-        )
-
-    log.info(f"Migrated to date cursor: {gift_date}")
-
-    # Build new state
-    state["gifts_date_cursor"] = gift_date
-    state["gifts_day_skip"] = 0  # Start fresh within this day
-    state.pop("gifts_skip", None)  # Remove old skip field
-    # Preserve gifts_total_synced
-
-    return state
 
 
 def _fetch_gifts_page(
@@ -162,9 +94,6 @@ def sync_gifts(
         Updated state dict
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    # Handle migration from old skip-based state
-    state = _migrate_skip_to_date_cursor(configuration, state)
 
     # Initialize state variables
     date_cursor = state.get("gifts_date_cursor")
@@ -322,80 +251,6 @@ def _extract_contact_created_date(contact: dict) -> Optional[str]:
         return None
 
 
-def _migrate_contacts_skip_to_date_cursor(
-    configuration: dict,
-    state: dict,
-) -> dict:
-    """Migrate from skip-based state to date-based cursor state for contacts.
-
-    When old-style state is detected (has contacts_skip but no contacts_date_cursor),
-    this function fetches a single contact at the current skip position to extract
-    its createDateTimeUtc, then converts the state to use date-based pagination.
-
-    Args:
-        configuration: Connector configuration
-        state: Current state dict (may contain old-style contacts_skip)
-
-    Returns:
-        Migrated state dict with date-based cursor fields
-
-    Raises:
-        RuntimeError: If migration fails (no contact found or date extraction fails)
-    """
-    old_skip = state.get("contacts_skip", 0)
-    has_old_state = old_skip > 0 and "contacts_date_cursor" not in state
-
-    if not has_old_state:
-        return state
-
-    log.info(
-        f"Migrating contacts from skip-based to date-based cursor. Old skip={old_skip}"
-    )
-    log.info(f"Fetching single contact at skip={old_skip} to extract date...")
-
-    # Fetch a single contact at the current skip position
-    response = query_contacts(
-        configuration,
-        skip=old_skip,
-        take=1,
-        modified_since=None,
-        modified_until=None,
-    )
-
-    # Handle response structure
-    contacts = (
-        response.get("list", response) if isinstance(response, dict) else response
-    )
-
-    if not contacts:
-        raise RuntimeError(
-            f"CONTACTS STATE MIGRATION FAILED: No contact found at skip={old_skip}. "
-            f"Cannot migrate to date-based cursor. "
-            f"Current state: {state}"
-        )
-
-    # Extract the created date
-    contact = contacts[0]
-    created_date = _extract_contact_created_date(contact)
-
-    if not created_date:
-        raise RuntimeError(
-            f"CONTACTS STATE MIGRATION FAILED: Could not extract createDateTimeUtc from contact at skip={old_skip}. "
-            f"Contact data: {contact}. "
-            f"Cannot migrate to date-based cursor."
-        )
-
-    log.info(f"Migrated contacts to date cursor: {created_date}")
-
-    # Build new state
-    state["contacts_date_cursor"] = created_date
-    state["contacts_day_skip"] = 0  # Start fresh within this day
-    state.pop("contacts_skip", None)  # Remove old skip field
-    # Preserve contacts_total_synced
-
-    return state
-
-
 def _fetch_contacts_page(
     configuration: dict,
     skip: int,
@@ -455,9 +310,6 @@ def sync_contacts(
         Updated state dict
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    # Handle migration from old skip-based state
-    state = _migrate_contacts_skip_to_date_cursor(configuration, state)
 
     # Initialize state variables
     date_cursor = state.get("contacts_date_cursor")
