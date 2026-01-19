@@ -232,18 +232,18 @@ def update(configuration: dict, state: dict):
             log.info("Performing initial sync (all records)")
 
     # Sync gifts (if not already complete in this run)
-    if not state.get("gifts_complete"):
-        log.info("Syncing gifts...")
-        yield from sync_gifts(
-            configuration,
-            state=state,
-            modified_since=modified_since,
-            modified_until=debug_end,
-        )
-        state["gifts_complete"] = True
-        yield op.checkpoint(state=state)
-    else:
-        log.info("Gifts already synced in previous run, skipping...")
+    # if not state.get("gifts_complete"):
+    #     log.info("Syncing gifts...")
+    #     yield from sync_gifts(
+    #         configuration,
+    #         state=state,
+    #         modified_since=modified_since,
+    #         modified_until=debug_end,
+    #     )
+    #     state["gifts_complete"] = True
+    #     yield op.checkpoint(state=state)
+    # else:
+    #     log.info("Gifts already synced in previous run, skipping...")
 
     # Sync contacts (if not already complete in this run)
     if not state.get("contacts_complete"):

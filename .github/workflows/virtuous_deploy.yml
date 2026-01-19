@@ -47,4 +47,4 @@ jobs:
           FIVETRAN_API_KEY: ${{ secrets.FIVETRAN_API_KEY }}
           FIVETRAN_DESTINATION: ${{ secrets.VIRTUOUS_FIVETRAN_DESTINATION }}
         run: |
-          fivetran deploy --api-key $FIVETRAN_API_KEY --destination $FIVETRAN_DESTINATION --configuration ./configuration.json --connection virtuous_client_sfl --force
+          fivetran deploy --api-key $FIVETRAN_API_KEY --destination $FIVETRAN_DESTINATION --configuration ./configuration.json --connection test_virtuous_client_sfl --force

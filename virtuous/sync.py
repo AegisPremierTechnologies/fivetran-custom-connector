@@ -237,15 +237,15 @@ def sync_gifts(
     return state
 
 
-def _extract_contact_created_date(contact: dict) -> Optional[str]:
-    """Extract createDateTimeUtc from a contact record and return as YYYY-MM-DD string."""
-    created_date = contact.get("createDateTimeUtc")
-    if not created_date:
+def _extract_contact_modified_date(contact: dict) -> Optional[str]:
+    """Extract modifiedDateTimeUtc from a contact record and return as YYYY-MM-DD string."""
+    modified_date = contact.get("modifiedDateTimeUtc")
+    if not modified_date:
         return None
     try:
         from dateutil import parser as date_parser
 
-        dt = date_parser.parse(created_date)
+        dt = date_parser.parse(modified_date)
         return dt.strftime("%Y-%m-%d")
     except (ValueError, TypeError):
         return None
@@ -256,7 +256,7 @@ def _fetch_contacts_page(
     skip: int,
     modified_since: Optional[str],
     modified_until: Optional[str],
-    created_date_since: Optional[str],
+    modified_date_cursor: Optional[str],
 ) -> Tuple[int, list]:
     """Fetch a single page of contacts. Returns (skip, contacts_list)."""
     response = query_contacts(
@@ -265,7 +265,7 @@ def _fetch_contacts_page(
         take=PAGE_SIZE,
         modified_since=modified_since,
         modified_until=modified_until,
-        created_date_since=created_date_since,
+        modified_date_cursor=modified_date_cursor,
     )
     # Handle response structure - may be {"list": [...]} or just [...]
     contacts = (
@@ -282,7 +282,7 @@ def sync_contacts(
 ) -> Generator[Any, None, dict]:
     """Sync all contacts and related entities with parallel fetching and date-based cursor.
 
-    Uses Create DateTime UTC as the primary cursor to avoid large SKIP values that can
+    Uses Last Modified Date as the primary cursor to avoid large SKIP values that can
     cause server-side 500 errors. Fetches PARALLEL_REQUESTS pages concurrently
     within the date-filtered query.
 
@@ -378,8 +378,8 @@ def sync_contacts(
                 contact_id = str(contact.get("id", ""))
                 debug = is_first_record and i == 0 and len(batch_buffer) == 0
 
-                # Extract created date for cursor tracking
-                contact_date = _extract_contact_created_date(contact)
+                # Extract modified date for cursor tracking
+                contact_date = _extract_contact_modified_date(contact)
                 if contact_date:
                     last_contact_date_in_batch = contact_date
 
