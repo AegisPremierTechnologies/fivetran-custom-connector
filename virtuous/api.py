@@ -277,6 +277,7 @@ def query_gifts(
     take: int = 500,
     modified_since: Optional[str] = None,
     modified_until: Optional[str] = None,
+    gift_date_since: Optional[str] = None,
 ) -> dict:
     """Query gifts from Virtuous API with retry logic.
 
@@ -286,6 +287,8 @@ def query_gifts(
         take: Number of records to return (max 1000)
         modified_since: Date string (YYYY-MM-DD) for incremental sync start
         modified_until: Date string (YYYY-MM-DD) for incremental sync end (debug mode)
+        gift_date_since: Date string (YYYY-MM-DD) to filter gifts with giftDate >= value
+                         Used for date-based cursor pagination to avoid large skip values.
 
     Returns:
         API response with list of gifts
@@ -306,6 +309,18 @@ def query_gifts(
 
     # Add date filter using proper API structure
     conditions = []
+
+    # Gift Date filter for cursor-based pagination
+    if gift_date_since:
+        conditions.append(
+            {
+                "parameter": "Gift Date",
+                "operator": "OnOrAfter",
+                "value": gift_date_since,
+            }
+        )
+
+    # Last Modified Date filters for incremental sync
     if modified_since:
         conditions.append(
             {

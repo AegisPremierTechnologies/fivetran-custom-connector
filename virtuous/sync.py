@@ -28,23 +28,241 @@ BATCH_SIZE = (
 PARALLEL_REQUESTS = 4  # Number of concurrent API requests
 
 
-def _fetch_gifts_page(
+def _extract_gift_date(gift: dict) -> Optional[str]:
+    """Extract giftDate from a gift record and return as YYYY-MM-DD string."""
+    gift_date = gift.get("giftDate")
+    if not gift_date:
+        return None
+    try:
+        # Parse the datetime and return just the date portion
+        from dateutil import parser as date_parser
+
+        dt = date_parser.parse(gift_date)
+        return dt.strftime("%Y-%m-%d")
+    except (ValueError, TypeError):
+        return None
+
+
+def _migrate_skip_to_date_cursor(
     configuration: dict,
-    skip: int,
-    modified_since: Optional[str],
-    modified_until: Optional[str],
-) -> Tuple[int, list]:
-    """Fetch a single page of gifts. Returns (skip, gifts_list)."""
+    state: dict,
+) -> dict:
+    """Migrate from skip-based state to date-based cursor state.
+
+    When old-style state is detected (has gifts_skip but no gifts_date_cursor),
+    this function fetches a single gift at the current skip position to extract
+    its giftDate, then converts the state to use date-based pagination.
+
+    Args:
+        configuration: Connector configuration
+        state: Current state dict (may contain old-style gifts_skip)
+
+    Returns:
+        Migrated state dict with date-based cursor fields
+
+    Raises:
+        RuntimeError: If migration fails (no gift found or date extraction fails)
+    """
+    old_skip = state.get("gifts_skip", 0)
+    has_old_state = old_skip > 0 and "gifts_date_cursor" not in state
+
+    if not has_old_state:
+        return state
+
+    log.info(f"Migrating from skip-based to date-based cursor. Old skip={old_skip}")
+    log.info(f"Fetching single gift at skip={old_skip} to extract date...")
+
+    # Fetch a single gift at the current skip position
     response = query_gifts(
         configuration,
-        skip=skip,
-        take=PAGE_SIZE,
-        modified_since=modified_since,
-        modified_until=modified_until,
+        skip=old_skip,
+        take=1,
+        modified_since=None,
+        modified_until=None,
     )
-    # Handle response structure - may be {"list": [...]} or just [...]
+
+    # Handle response structure
     gifts = response.get("list", response) if isinstance(response, dict) else response
-    return (skip, gifts or [])
+
+    if not gifts:
+        raise RuntimeError(
+            f"STATE MIGRATION FAILED: No gift found at skip={old_skip}. "
+            f"Cannot migrate to date-based cursor. "
+            f"Current state: {state}"
+        )
+
+    # Extract the gift date
+    gift = gifts[0]
+    gift_date = _extract_gift_date(gift)
+
+    if not gift_date:
+        raise RuntimeError(
+            f"STATE MIGRATION FAILED: Could not extract giftDate from gift at skip={old_skip}. "
+            f"Gift data: {gift}. "
+            f"Cannot migrate to date-based cursor."
+        )
+
+    log.info(f"Migrated to date cursor: {gift_date}")
+
+    # Build new state
+    state["gifts_date_cursor"] = gift_date
+    state["gifts_day_skip"] = 0  # Start fresh within this day
+    state.pop("gifts_skip", None)  # Remove old skip field
+    # Preserve gifts_total_synced
+
+    return state
+
+
+def sync_gifts(
+    configuration: dict,
+    state: dict,
+    modified_since: Optional[str] = None,
+    modified_until: Optional[str] = None,
+) -> Generator[Any, None, dict]:
+    """Sync all gifts with date-based cursor and batch checkpointing.
+
+    Uses Gift Date as the primary cursor to avoid large SKIP values that can
+    cause server-side 500 errors. Within a single date, uses skip pagination
+    to handle days with many gifts.
+
+    State variables:
+    - gifts_date_cursor: Current date being synced (YYYY-MM-DD)
+    - gifts_day_skip: Skip offset within the current date
+    - gifts_total_synced: Running total of synced gifts
+
+    Args:
+        configuration: Connector configuration
+        state: Current sync state (may contain old gifts_skip for migration)
+        modified_since: ISO datetime string for incremental sync start (None for full sync)
+        modified_until: ISO datetime string for incremental sync end (debug mode)
+
+    Yields:
+        Upsert operations and checkpoint operations
+
+    Returns:
+        Updated state dict
+    """
+    # Handle migration from old skip-based state
+    state = _migrate_skip_to_date_cursor(configuration, state)
+
+    # Initialize state variables
+    date_cursor = state.get("gifts_date_cursor")
+    day_skip = state.get("gifts_day_skip", 0)
+    total_synced = state.get("gifts_total_synced", 0)
+
+    if date_cursor:
+        log.info(
+            f"Resuming gifts sync from date={date_cursor}, day_skip={day_skip}, total_synced={total_synced}"
+        )
+    else:
+        log.info(f"Starting fresh gifts sync (no date cursor)")
+
+    # Buffer for accumulating rows before batch yield
+    batch_buffer: List[dict] = []
+    is_first_record = total_synced == 0
+    reached_end = False
+
+    while not reached_end:
+        # Fetch a page of gifts
+        log.info(f"Fetching gifts: date_cursor={date_cursor}, skip={day_skip}")
+
+        response = query_gifts(
+            configuration,
+            skip=day_skip,
+            take=PAGE_SIZE,
+            modified_since=modified_since,
+            modified_until=modified_until,
+            gift_date_since=date_cursor,
+        )
+
+        # Handle response structure
+        gifts = (
+            response.get("list", response) if isinstance(response, dict) else response
+        )
+
+        if not gifts:
+            log.info(f"No more gifts returned. Reached end.")
+            reached_end = True
+            break
+
+        log.info(f"Fetched {len(gifts)} gifts")
+
+        # Track if we need to advance the date cursor
+        last_gift_date_in_page = None
+
+        for i, gift in enumerate(gifts):
+            # Extract this gift's date
+            gift_date = _extract_gift_date(gift)
+            last_gift_date_in_page = gift_date
+
+            batch_buffer.append(
+                {
+                    "table": "gifts",
+                    "data": format_gift(
+                        gift,
+                        debug=(is_first_record and i == 0 and len(batch_buffer) == 0),
+                    ),
+                }
+            )
+
+        total_synced += len(gifts)
+        is_first_record = False
+
+        # Determine if we got a partial page (end of data)
+        if len(gifts) < PAGE_SIZE:
+            log.info(f"Partial page ({len(gifts)} records), reached end")
+            reached_end = True
+        else:
+            # Check if we should advance the date cursor or continue within current day
+            if (
+                last_gift_date_in_page
+                and date_cursor
+                and last_gift_date_in_page > date_cursor
+            ):
+                # Advanced to a new date - update cursor and reset skip
+                log.info(
+                    f"Date advanced from {date_cursor} to {last_gift_date_in_page}"
+                )
+                date_cursor = last_gift_date_in_page
+                day_skip = 0  # We'll continue from this date, but skip is implicit via giftDate filter
+            else:
+                # Still within same date, increment skip
+                day_skip += PAGE_SIZE
+
+        log.info(f"Progress: total={total_synced}, buffer={len(batch_buffer)}")
+
+        # Check if we should yield batch and checkpoint
+        if len(batch_buffer) >= BATCH_SIZE:
+            log.info(f"Yielding batch of {len(batch_buffer)} gifts and checkpointing")
+
+            # Yield all buffered upserts
+            for item in batch_buffer:
+                yield op.upsert(table=item["table"], data=item["data"])
+
+            # Clear buffer
+            batch_buffer = []
+
+            # Checkpoint with current position
+            state["gifts_date_cursor"] = date_cursor
+            state["gifts_day_skip"] = day_skip
+            state["gifts_total_synced"] = total_synced
+            yield op.checkpoint(state=state)
+
+    # Yield any remaining buffered rows
+    if batch_buffer:
+        log.info(f"Yielding final batch of {len(batch_buffer)} gifts")
+        for item in batch_buffer:
+            yield op.upsert(table=item["table"], data=item["data"])
+
+    log.info(f"Gifts sync complete. Total synced: {total_synced}")
+
+    # Mark gifts as complete and clear cursor fields
+    state["gifts_complete"] = True
+    state.pop("gifts_date_cursor", None)
+    state.pop("gifts_day_skip", None)
+    state.pop("gifts_total_synced", None)
+
+    return state
 
 
 def _fetch_contacts_page(
@@ -66,151 +284,6 @@ def _fetch_contacts_page(
         response.get("list", response) if isinstance(response, dict) else response
     )
     return (skip, contacts or [])
-
-
-def sync_gifts(
-    configuration: dict,
-    state: dict,
-    modified_since: Optional[str] = None,
-    modified_until: Optional[str] = None,
-) -> Generator[Any, None, dict]:
-    """Sync all gifts with parallel fetching and batch checkpointing.
-
-    Fetches PARALLEL_REQUESTS pages concurrently, accumulates rows in batches
-    of BATCH_SIZE (20k), yields all upserts, then checkpoints with the current
-    skip position for resume capability.
-
-    Args:
-        configuration: Connector configuration
-        state: Current sync state (may contain gifts_skip for resume)
-        modified_since: ISO datetime string for incremental sync start (None for full sync)
-        modified_until: ISO datetime string for incremental sync end (debug mode)
-
-    Yields:
-        Upsert operations and checkpoint operations
-
-    Returns:
-        Updated state dict
-    """
-    # Resume from state if available
-    skip = state.get("gifts_skip", 0)
-    total_synced = state.get("gifts_total_synced", 0)
-
-    if skip > 0:
-        log.info(f"Resuming gifts sync from skip={skip}, total_synced={total_synced}")
-
-    # Buffer for accumulating rows before batch yield
-    batch_buffer: List[dict] = []
-    is_first_record = total_synced == 0
-    reached_end = False
-
-    while not reached_end:
-        # Submit parallel requests
-        with ThreadPoolExecutor(max_workers=PARALLEL_REQUESTS) as executor:
-            futures = {}
-            for i in range(PARALLEL_REQUESTS):
-                page_skip = skip + (i * PAGE_SIZE)
-                future = executor.submit(
-                    _fetch_gifts_page,
-                    configuration,
-                    page_skip,
-                    modified_since,
-                    modified_until,
-                )
-                futures[future] = page_skip
-
-            # Collect results and sort by skip to maintain order
-            results: List[Tuple[int, list]] = []
-            for future in as_completed(futures):
-                try:
-                    result = future.result()
-                    results.append(result)
-                except Exception as e:
-                    log.severe(f"Error fetching gifts page: {e}")
-                    raise
-
-        # Sort results by skip position to maintain order
-        results.sort(key=lambda x: x[0])
-
-        log.info(f"Fetched {len(results)} pages in parallel starting at skip={skip}")
-
-        # Process results in order
-        for page_skip, gifts in results:
-            if not gifts:
-                log.info(f"Empty page at skip={page_skip}, reached end")
-                reached_end = True
-                break
-
-            for i, gift in enumerate(gifts):
-                batch_buffer.append(
-                    {
-                        "table": "gifts",
-                        "data": format_gift(
-                            gift,
-                            debug=(
-                                is_first_record and i == 0 and len(batch_buffer) == 0
-                            ),
-                        ),
-                    }
-                )
-
-            total_synced += len(gifts)
-            is_first_record = False
-
-            # Check if this page indicates end of data
-            if len(gifts) < PAGE_SIZE:
-                log.info(
-                    f"Partial page at skip={page_skip} ({len(gifts)} records), reached end"
-                )
-                reached_end = True
-                break
-
-        # Update skip position to after all fetched pages
-        if not reached_end:
-            skip += PARALLEL_REQUESTS * PAGE_SIZE
-        else:
-            # Find the actual final skip position based on last full page
-            for page_skip, gifts in reversed(results):
-                if gifts and len(gifts) == PAGE_SIZE:
-                    skip = page_skip + PAGE_SIZE
-                    break
-
-        log.info(
-            f"Parallel fetch complete. Total: {total_synced}, buffer: {len(batch_buffer)}"
-        )
-
-        # Check if we should yield batch and checkpoint
-        if len(batch_buffer) >= BATCH_SIZE:
-            log.info(
-                f"Yielding batch of {len(batch_buffer)} gifts and checkpointing at skip={skip}"
-            )
-
-            # Yield all buffered upserts
-            for item in batch_buffer:
-                yield op.upsert(table=item["table"], data=item["data"])
-
-            # Clear buffer
-            batch_buffer = []
-
-            # Checkpoint with current position
-            state["gifts_skip"] = skip
-            state["gifts_total_synced"] = total_synced
-            yield op.checkpoint(state=state)
-
-    # Yield any remaining buffered rows
-    if batch_buffer:
-        log.info(f"Yielding final batch of {len(batch_buffer)} gifts")
-        for item in batch_buffer:
-            yield op.upsert(table=item["table"], data=item["data"])
-
-    log.info(f"Gifts sync complete. Total synced: {total_synced}")
-
-    # Mark gifts as complete and clear skip position
-    state["gifts_complete"] = True
-    state.pop("gifts_skip", None)
-    state.pop("gifts_total_synced", None)
-
-    return state
 
 
 def sync_contacts(
