@@ -214,19 +214,24 @@ def sync_gifts(
             reached_end = True
         else:
             # Check if we should advance the date cursor or continue within current day
-            if (
-                last_gift_date_in_page
-                and date_cursor
-                and last_gift_date_in_page > date_cursor
-            ):
-                # Advanced to a new date - update cursor and reset skip
-                log.info(
-                    f"Date advanced from {date_cursor} to {last_gift_date_in_page}"
-                )
-                date_cursor = last_gift_date_in_page
-                day_skip = 0  # We'll continue from this date, but skip is implicit via giftDate filter
+            if last_gift_date_in_page:
+                if date_cursor is None:
+                    # First time setting cursor (fresh run)
+                    log.info(f"Setting initial date cursor to {last_gift_date_in_page}")
+                    date_cursor = last_gift_date_in_page
+                    day_skip = 0
+                elif last_gift_date_in_page > date_cursor:
+                    # Advanced to a new date - update cursor and reset skip
+                    log.info(
+                        f"Date advanced from {date_cursor} to {last_gift_date_in_page}"
+                    )
+                    date_cursor = last_gift_date_in_page
+                    day_skip = 0
+                else:
+                    # Still within same date, increment skip
+                    day_skip += PAGE_SIZE
             else:
-                # Still within same date, increment skip
+                # No date extracted (shouldn't happen), fall back to skip increment
                 day_skip += PAGE_SIZE
 
         log.info(f"Progress: total={total_synced}, buffer={len(batch_buffer)}")
