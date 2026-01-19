@@ -362,6 +362,7 @@ def query_contacts(
     take: int = 1000,
     modified_since: Optional[str] = None,
     modified_until: Optional[str] = None,
+    created_date_since: Optional[str] = None,
 ) -> dict:
     """Query full contacts from Virtuous API with retry logic.
 
@@ -371,6 +372,8 @@ def query_contacts(
         take: Number of records to return (max 1000)
         modified_since: Date string (YYYY-MM-DD) for incremental sync start
         modified_until: Date string (YYYY-MM-DD) for incremental sync end (debug mode)
+        created_date_since: Date string (YYYY-MM-DD) to filter contacts with createDateTimeUtc >= value
+                            Used for date-based cursor pagination to avoid large skip values.
 
     Returns:
         API response with list of contacts
@@ -391,6 +394,18 @@ def query_contacts(
 
     # Add date filter using proper API structure
     conditions = []
+
+    # Create DateTime filter for cursor-based pagination
+    if created_date_since:
+        conditions.append(
+            {
+                "parameter": "Create DateTime UTC",
+                "operator": "OnOrAfter",
+                "value": created_date_since,
+            }
+        )
+
+    # Last Modified Date filters for incremental sync
     if modified_since:
         conditions.append(
             {
@@ -411,7 +426,7 @@ def query_contacts(
         payload["groups"] = [{"conditions": conditions}]
 
     log.info(
-        f"Querying contacts: skip={skip}, take={take}, modifiedSince={modified_since}, modifiedUntil={modified_until}"
+        f"Querying contacts: skip={skip}, take={take}, createdDateSince={created_date_since}, modifiedSince={modified_since}"
     )
 
     response = request_with_retry(
