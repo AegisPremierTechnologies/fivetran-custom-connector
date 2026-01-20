@@ -206,6 +206,17 @@ def schema(configuration: dict):
                 "modified_by_user": "STRING",
             },
         },
+        {
+            "table": "errors",
+            "primary_key": ["url", "skip", "take"],
+            "columns": {
+                "url": "STRING",
+                "payload": "STRING",
+                "error_message": "STRING",
+                "skip": "INT",
+                "take": "INT",
+            },
+        },
     ]
 
 

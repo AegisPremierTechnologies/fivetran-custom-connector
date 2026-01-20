@@ -10,7 +10,7 @@ from fivetran_connector_sdk import Logging as log
 from fivetran_connector_sdk import Operations as op
 
 from api import query_gifts, query_contacts
-from fetch import IDCursor, fetch_batch_parallel, BATCH_SIZE
+from fetch import IDCursor, ErrorRecord, fetch_batch_parallel, BATCH_SIZE
 from models import (
     format_gift,
     format_contact,
@@ -124,15 +124,25 @@ def sync_entity(
         if not records:
             break
 
-        rows = transform_fn(records, is_first_batch)
+        # Separate error records from valid records
+        valid_records = [r for r in records if not isinstance(r, ErrorRecord)]
+        error_records = [r for r in records if isinstance(r, ErrorRecord)]
+
+        # Log error records to the errors table
+        for err in error_records:
+            log.info(f"Logging failed query to errors table: {err.url}")
+            yield op.upsert(table="errors", data=err.to_dict())
+
+        # Transform and buffer valid records
+        rows = transform_fn(valid_records, is_first_batch) if valid_records else []
         batch_buffer.extend(rows)
         is_first_batch = False
 
         if max_id is not None:
-            cursor.advance(max_id, len(records))
+            cursor.advance(max_id, len(valid_records))
 
         log.info(
-            f"{entity_type}: total={cursor.total_synced}, buffer={len(batch_buffer)}"
+            f"{entity_type}: total={cursor.total_synced}, buffer={len(batch_buffer)}, errors={len(error_records)}"
         )
 
         if len(batch_buffer) >= BATCH_SIZE:

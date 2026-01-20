@@ -4,9 +4,10 @@ Provides ID-based cursor tracking, adaptive page fetching (smaller take on
 any error), and parallel batch fetching.
 """
 
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple, Union
 
 from requests.exceptions import RequestException
 from fivetran_connector_sdk import Logging as log
@@ -16,7 +17,27 @@ from fivetran_connector_sdk import Logging as log
 PAGE_SIZE = 1000
 BATCH_SIZE = 8000
 PARALLEL_REQUESTS = 8
-TAKE_SIZES = [1000, 500, 250, 125]
+TAKE_SIZES = [1000, 500, 250, 50, 10, 1]
+
+
+@dataclass
+class ErrorRecord:
+    """Represents a failed query that should be logged to the errors table."""
+
+    url: str
+    payload: str
+    error_message: str
+    skip: int
+    take: int
+
+    def to_dict(self) -> dict:
+        return {
+            "url": self.url,
+            "payload": self.payload,
+            "error_message": self.error_message,
+            "skip": self.skip,
+            "take": self.take,
+        }
 
 
 @dataclass
@@ -58,15 +79,84 @@ def _extract_list(response: dict) -> list:
     return response or []
 
 
+def _build_error_record(
+    query_fn: Callable[..., dict],
+    skip: int,
+    take: int,
+    error: Exception,
+    **query_kwargs: Any,
+) -> ErrorRecord:
+    """Build an ErrorRecord from query context for logging to errors table."""
+    # Infer URL from function name
+    fn_name = query_fn.__name__
+    if "gift" in fn_name.lower():
+        url = f"https://api.virtuoussoftware.com/api/Gift/Query/FullGift?skip={skip}&take={take}"
+    elif "contact" in fn_name.lower():
+        url = f"https://api.virtuoussoftware.com/api/Contact/Query/FullContact?skip={skip}&take={take}"
+    else:
+        url = f"Unknown endpoint?skip={skip}&take={take}"
+
+    # Reconstruct payload from kwargs
+    id_cursor = query_kwargs.get("id_cursor")
+    modified_since = query_kwargs.get("modified_since")
+    modified_until = query_kwargs.get("modified_until")
+
+    # Determine sort field based on entity type
+    if "gift" in fn_name.lower():
+        sort_by = "Gift Id"
+        id_param = "Gift Id"
+    else:
+        sort_by = "Contact Id"
+        id_param = "Contact Id"
+
+    payload = {"sortBy": sort_by, "descending": False}
+    conditions = []
+    if id_cursor is not None:
+        conditions.append(
+            {
+                "parameter": id_param,
+                "operator": "GreaterThan",
+                "value": str(id_cursor),
+            }
+        )
+    if modified_since:
+        conditions.append(
+            {
+                "parameter": "Last Modified Date",
+                "operator": "OnOrAfter",
+                "value": modified_since,
+            }
+        )
+    if modified_until:
+        conditions.append(
+            {
+                "parameter": "Last Modified Date",
+                "operator": "OnOrBefore",
+                "value": modified_until,
+            }
+        )
+    if conditions:
+        payload["groups"] = [{"conditions": conditions}]
+
+    return ErrorRecord(
+        url=url,
+        payload=json.dumps(payload),
+        error_message=str(error)[:500],  # Truncate to avoid huge error messages
+        skip=skip,
+        take=take,
+    )
+
+
 def fetch_page_adaptive(
     query_fn: Callable[..., dict],
     skip: int,
     take: int,
     **query_kwargs: Any,
-) -> list:
+) -> List[Union[dict, ErrorRecord]]:
     """Fetch a page with adaptive resizing on ANY error.
 
     On failure, recursively splits into smaller sub-queries.
+    When take=1 fails, returns an ErrorRecord instead of raising.
     """
     try:
         response = query_fn(skip=skip, take=take, **query_kwargs)
@@ -81,8 +171,19 @@ def fetch_page_adaptive(
             next_idx = len(TAKE_SIZES)  # Force exhaustion
 
         if next_idx >= len(TAKE_SIZES):
-            log.severe(f"All take sizes exhausted at skip={skip}. Error: {e}")
-            raise
+            # Base case: take=1 still failed - log error instead of crashing
+            log.warning(
+                f"Query failed at take=1, skip={skip}. Logging to errors table. Error: {e}"
+            )
+            # Build URL and payload for error logging
+            error_record = _build_error_record(
+                query_fn=query_fn,
+                skip=skip,
+                take=take,
+                error=e,
+                **query_kwargs,
+            )
+            return [error_record]
 
         smaller_take = TAKE_SIZES[next_idx]
         num_sub_calls = take // smaller_take
@@ -103,8 +204,10 @@ def fetch_page_adaptive(
                 **query_kwargs,
             )
             all_records.extend(sub_records)
-            if len(sub_records) < smaller_take:
-                break
+            # Check if we got an error record back (don't break, might have more valid records)
+            if sub_records and not isinstance(sub_records[-1], ErrorRecord):
+                if len(sub_records) < smaller_take:
+                    break
 
         return all_records
 
@@ -159,6 +262,9 @@ def fetch_batch_parallel(
         all_records.extend(records)
 
         for record in records:
+            # Skip error records when tracking max ID
+            if isinstance(record, ErrorRecord):
+                continue
             record_id = extract_id(record)
             if record_id is not None and (max_id is None or record_id > max_id):
                 max_id = record_id
