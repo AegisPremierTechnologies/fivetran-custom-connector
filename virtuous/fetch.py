@@ -16,7 +16,7 @@ from fivetran_connector_sdk import Logging as log
 PAGE_SIZE = 1000
 BATCH_SIZE = 8000
 PARALLEL_REQUESTS = 8
-TAKE_SIZES = [1000, 500, 250, 100]
+TAKE_SIZES = [1000, 500, 250, 50]
 
 
 @dataclass
