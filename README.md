@@ -4,5 +4,5 @@ Connector created using [fivetran docs for the connector sdk](https://fivetran.c
 
 1. Setup python env
 2. install fivetran-connector-sdk
-3. run `fivetran debug` or `python connector.py` from ~/connector to run locally
+3. run `fivetran debug` or `python connector.py` from ~/connector to run locally (venv activated)
 4. run `fivetran deploy` with your api key, destination, and desired connector name to deploy (example in github workflow)
