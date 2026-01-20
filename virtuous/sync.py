@@ -43,6 +43,28 @@ def _extract_gift_date(gift: dict) -> Optional[str]:
         return None
 
 
+def _fetch_gifts_page_raw(
+    configuration: dict,
+    skip: int,
+    take: int,
+    modified_since: Optional[str],
+    modified_until: Optional[str],
+    gift_date_since: Optional[str],
+) -> list:
+    """Fetch a single page of gifts with specified take size. Returns gifts list."""
+    response = query_gifts(
+        configuration,
+        skip=skip,
+        take=take,
+        modified_since=modified_since,
+        modified_until=modified_until,
+        gift_date_since=gift_date_since,
+    )
+    # Handle response structure - may be {"list": [...]} or just [...]
+    gifts = response.get("list", response) if isinstance(response, dict) else response
+    return gifts or []
+
+
 def _fetch_gifts_page(
     configuration: dict,
     skip: int,
@@ -50,18 +72,79 @@ def _fetch_gifts_page(
     modified_until: Optional[str],
     gift_date_since: Optional[str],
 ) -> Tuple[int, list]:
-    """Fetch a single page of gifts. Returns (skip, gifts_list)."""
-    response = query_gifts(
-        configuration,
-        skip=skip,
-        take=PAGE_SIZE,
-        modified_since=modified_since,
-        modified_until=modified_until,
-        gift_date_since=gift_date_since,
-    )
-    # Handle response structure - may be {"list": [...]} or just [...]
-    gifts = response.get("list", response) if isinstance(response, dict) else response
-    return (skip, gifts or [])
+    """Fetch a page of gifts with adaptive take size on 500 errors.
+
+    Tries progressively smaller take sizes (1000→500→250→100) on failure,
+    making multiple smaller calls to fetch up to PAGE_SIZE records total.
+
+    Returns (skip, gifts_list).
+    """
+    from requests.exceptions import HTTPError
+
+    take_sizes = [PAGE_SIZE, 500, 250, 100]
+
+    for take_size in take_sizes:
+        try:
+            if take_size == PAGE_SIZE:
+                # First attempt with full page size
+                gifts = _fetch_gifts_page_raw(
+                    configuration,
+                    skip,
+                    take_size,
+                    modified_since,
+                    modified_until,
+                    gift_date_since,
+                )
+                return (skip, gifts)
+            else:
+                # Smaller take size - need to make multiple calls
+                log.info(f"Retrying gifts with take={take_size} in smaller batches")
+                all_gifts = []
+                num_calls = PAGE_SIZE // take_size
+
+                for i in range(num_calls):
+                    batch_skip = skip + (i * take_size)
+                    try:
+                        batch = _fetch_gifts_page_raw(
+                            configuration,
+                            batch_skip,
+                            take_size,
+                            modified_since,
+                            modified_until,
+                            gift_date_since,
+                        )
+                        all_gifts.extend(batch)
+
+                        # If we got fewer than requested, we've reached the end
+                        if len(batch) < take_size:
+                            break
+                    except HTTPError as inner_e:
+                        if (
+                            inner_e.response is not None
+                            and inner_e.response.status_code == 500
+                        ):
+                            log.warning(
+                                f"500 error at take={take_size}, batch={i}. Trying smaller size..."
+                            )
+                            raise  # Break out to try smaller take size
+                        raise
+
+                return (skip, all_gifts)
+
+        except HTTPError as e:
+            if e.response is not None and e.response.status_code == 500:
+                if take_size == take_sizes[-1]:
+                    # We've exhausted all take sizes, re-raise
+                    log.severe(
+                        f"All gift take sizes exhausted (tried {take_sizes}). Giving up."
+                    )
+                    raise
+                log.warning(f"500 error with take={take_size}, trying smaller size...")
+                continue
+            raise  # Non-500 error, re-raise immediately
+
+    # Should not reach here, but just in case
+    return (skip, [])
 
 
 def sync_gifts(
@@ -237,18 +320,19 @@ def sync_gifts(
     return state
 
 
-def _fetch_contacts_page(
+def _fetch_contacts_page_raw(
     configuration: dict,
     skip: int,
+    take: int,
     modified_since: Optional[str],
     modified_until: Optional[str],
     id_cursor: Optional[int],
-) -> Tuple[int, list]:
-    """Fetch a single page of contacts. Returns (skip, contacts_list)."""
+) -> list:
+    """Fetch a single page of contacts with specified take size. Returns contacts list."""
     response = query_contacts(
         configuration,
         skip=skip,
-        take=PAGE_SIZE,
+        take=take,
         modified_since=modified_since,
         modified_until=modified_until,
         id_cursor=id_cursor,
@@ -257,7 +341,89 @@ def _fetch_contacts_page(
     contacts = (
         response.get("list", response) if isinstance(response, dict) else response
     )
-    return (skip, contacts or [])
+    return contacts or []
+
+
+def _fetch_contacts_page(
+    configuration: dict,
+    skip: int,
+    modified_since: Optional[str],
+    modified_until: Optional[str],
+    id_cursor: Optional[int],
+) -> Tuple[int, list]:
+    """Fetch a page of contacts with adaptive take size on 500 errors.
+
+    Tries progressively smaller take sizes (1000→500→250→100) on failure,
+    making multiple smaller calls to fetch up to PAGE_SIZE records total.
+
+    Returns (skip, contacts_list).
+    """
+    from requests.exceptions import HTTPError
+
+    take_sizes = [PAGE_SIZE, 500, 250, 100]
+
+    for take_size in take_sizes:
+        try:
+            if take_size == PAGE_SIZE:
+                # First attempt with full page size
+                contacts = _fetch_contacts_page_raw(
+                    configuration,
+                    skip,
+                    take_size,
+                    modified_since,
+                    modified_until,
+                    id_cursor,
+                )
+                return (skip, contacts)
+            else:
+                # Smaller take size - need to make multiple calls
+                log.info(f"Retrying with take={take_size} in smaller batches")
+                all_contacts = []
+                num_calls = PAGE_SIZE // take_size
+
+                for i in range(num_calls):
+                    batch_skip = skip + (i * take_size)
+                    try:
+                        batch = _fetch_contacts_page_raw(
+                            configuration,
+                            batch_skip,
+                            take_size,
+                            modified_since,
+                            modified_until,
+                            id_cursor,
+                        )
+                        all_contacts.extend(batch)
+
+                        # If we got fewer than requested, we've reached the end
+                        if len(batch) < take_size:
+                            break
+                    except HTTPError as inner_e:
+                        if (
+                            inner_e.response is not None
+                            and inner_e.response.status_code == 500
+                        ):
+                            log.warning(
+                                f"500 error at take={take_size}, batch={i}. Trying smaller size..."
+                            )
+                            raise  # Break out to try smaller take size
+                        raise
+
+                return (skip, all_contacts)
+
+        except HTTPError as e:
+            if e.response is not None and e.response.status_code == 500:
+                if take_size == take_sizes[-1]:
+                    # We've exhausted all take sizes, re-raise
+                    log.severe(
+                        f"All take sizes exhausted (tried {take_sizes}). Giving up."
+                    )
+                    raise
+                log.warning(f"500 error with take={take_size}, trying smaller size...")
+                continue
+            raise  # Non-500 error, re-raise immediately
+
+    # Should not reach here, but just in case
+    return (skip, [])
 
 
 def sync_contacts(
