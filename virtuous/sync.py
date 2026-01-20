@@ -59,6 +59,7 @@ def _fetch_gifts_page_raw(
         modified_since=modified_since,
         modified_until=modified_until,
         gift_date_since=gift_date_since,
+        raise_on_500=True,  # Immediately raise on 500 for adaptive sizing
     )
     # Handle response structure - may be {"list": [...]} or just [...]
     gifts = response.get("list", response) if isinstance(response, dict) else response
@@ -336,6 +337,7 @@ def _fetch_contacts_page_raw(
         modified_since=modified_since,
         modified_until=modified_until,
         id_cursor=id_cursor,
+        raise_on_500=True,  # Immediately raise on 500 for adaptive sizing
     )
     # Handle response structure - may be {"list": [...]} or just [...]
     contacts = (

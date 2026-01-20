@@ -151,6 +151,7 @@ def request_with_retry(
     params: Optional[dict] = None,
     json: Optional[dict] = None,
     context: str = "",
+    raise_on_500: bool = False,
 ) -> rq.Response:
     """Make an HTTP request with exponential backoff retry logic and rate limit handling.
 
@@ -161,12 +162,14 @@ def request_with_retry(
         params: Query parameters
         json: JSON body
         context: Context string for logging (e.g., "gifts skip=1000")
+        raise_on_500: If True, immediately raise HTTPError on 500 without retrying.
+                      Used by adaptive query sizing to try smaller take values first.
 
     Returns:
         Response object
 
     Raises:
-        HTTPError: If all retries are exhausted
+        HTTPError: If all retries are exhausted (or immediately on 500 if raise_on_500=True)
         RequestException: For non-retryable errors
     """
     last_exception = None
@@ -184,6 +187,13 @@ def request_with_retry(
 
             # Check if we need to retry
             if _is_retryable_error(response.status_code):
+                # If raise_on_500 is set and this is a 500 error, raise immediately
+                if raise_on_500 and response.status_code == 500:
+                    log.info(
+                        f"500 error for {context}, raising immediately for adaptive sizing"
+                    )
+                    response.raise_for_status()
+
                 # Get rate limit info for logging
                 limit, remaining, reset_ts = _parse_rate_limit_headers(response)
                 rate_info = (
@@ -278,6 +288,7 @@ def query_gifts(
     modified_since: Optional[str] = None,
     modified_until: Optional[str] = None,
     gift_date_since: Optional[str] = None,
+    raise_on_500: bool = False,
 ) -> dict:
     """Query gifts from Virtuous API with retry logic.
 
@@ -351,6 +362,7 @@ def query_gifts(
         params=params,
         json=payload,
         context=f"gifts skip={skip}",
+        raise_on_500=raise_on_500,
     )
 
     return response.json()
@@ -363,6 +375,7 @@ def query_contacts(
     modified_since: Optional[str] = None,
     modified_until: Optional[str] = None,
     id_cursor: Optional[int] = None,
+    raise_on_500: bool = False,
 ) -> dict:
     """Query full contacts from Virtuous API with retry logic.
 
@@ -436,6 +449,7 @@ def query_contacts(
         params=params,
         json=payload,
         context=f"contacts skip={skip}",
+        raise_on_500=raise_on_500,
     )
 
     return response.json()
