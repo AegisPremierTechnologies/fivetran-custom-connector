@@ -1,0 +1,58 @@
+name: Deploy iDonate Connector
+on:
+  push:
+    branches: [main]
+    paths:
+      - "idonate/**"
+      - ".github/workflows/idonate_deploy.yml"
+
+  pull_request:
+    branches: [main]
+    paths:
+      - "idonate/**"
+      - ".github/workflows/idonate_deploy.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install fivetran-connector-sdk
+
+      - name: Create configuration.json
+        working-directory: "./idonate"
+        env:
+          THF_IDONATE_APIKEY: ${{ secrets.THF_IDONATE_APIKEY }}
+          THF_IDONATE_BASEURL: ${{ secrets.THF_IDONATE_BASEURL }}
+          THF_IDONATE_ORGID: ${{ secrets.THF_IDONATE_ORGID }}
+        run: |
+          echo "Creating configuration.json with provided secrets..."
+          cat <<EOF > configuration.json
+          {
+            "api_key": "$THF_IDONATE_APIKEY",
+            "base_url": "$THF_IDONATE_BASEURL",
+            "organization_id": "$THF_IDONATE_ORGID",
+            "initial_sync_days_back": "1200",
+            "debug_start_date": "",
+            "debug_end_date": ""
+          }
+          EOF
+
+      - name: Deploy to Fivetran
+        working-directory: "./idonate"
+        env:
+          FIVETRAN_API_KEY: ${{ secrets.FIVETRAN_API_KEY }}
+          FIVETRAN_DESTINATION: ${{ secrets.IDONATE_FIVETRAN_DESTINATION }}
+        run: |
+          fivetran deploy --api-key $FIVETRAN_API_KEY --destination $FIVETRAN_DESTINATION --configuration ./configuration.json --connection idonate_client_thf --force
