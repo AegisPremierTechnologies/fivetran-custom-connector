@@ -1,13 +1,50 @@
 """Data transformation for iDonate connector.
 
 Pure input/output transformations:
+- Synthetic stable contact_id generation
+- Email normalization
 - Date parsing
-- Type casting
 - Flattening nested structures to JSON strings where needed
 """
 
+import hashlib
 import json
 from typing import Any, Dict, Optional
+
+
+def _extract_or_hash_contact_id(raw_contact: dict) -> str:
+    """Extract or generate stable contact_id from raw contact.
+
+    Prefers explicit id field from API, falls back to email-based hash.
+    Ensures deterministic ID for deduplication across syncs.
+
+    Args:
+        raw_contact: Contact dict with email, firstname, lastname, etc.
+
+    Returns:
+        Stable contact_id string (either from API or generated)
+    """
+    # If contact has explicit id, use it
+    contact_id = raw_contact.get("id")
+    if contact_id:
+        return str(contact_id)
+
+    # Otherwise, generate deterministic hash based on email
+    email = (raw_contact.get("email") or "").lower().strip()
+    if email:
+        # Email is most stable identifier
+        hash_val = hashlib.sha256(email.encode()).hexdigest()[:12]
+        return f"contact_{hash_val}"
+
+    # Fallback: hash entire object
+    obj_str = json.dumps(raw_contact, sort_keys=True, default=str)
+    hash_val = hashlib.sha256(obj_str.encode()).hexdigest()[:12]
+    return f"contact_{hash_val}"
+
+
+def _normalize_email(email: Optional[str]) -> Optional[str]:
+    """Normalize email for matching: lowercase + trim whitespace."""
+    return email.lower().strip() if email else None
 
 
 def _format_date(date_value: Any) -> Optional[str]:
@@ -51,16 +88,31 @@ def _flatten_address(address: Optional[Dict]) -> Dict[str, Optional[str]]:
     }
 
 
-def format_contact(raw_contact: dict) -> dict:
+def format_contact(raw_contact: dict, contact_id: Optional[str] = None) -> dict:
     """Transform raw contact from API to Fivetran-compliant row.
 
-    Extracts contact data and flattens address.
-    Primary key is email.
+    Primary key is contact_id (synthetic stable ID).
+    Includes email_normalized for better matching.
+
+    Args:
+        raw_contact: Raw contact dict from API
+        contact_id: Pre-computed contact_id. If None, will be extracted/generated.
+
+    Returns:
+        Normalized contact row for Fivetran
     """
     c = raw_contact
 
+    # Use provided contact_id or extract/generate one
+    if contact_id is None:
+        contact_id = _extract_or_hash_contact_id(c)
+
+    email = c.get("email")
+
     return {
-        "email": c.get("email"),
+        "contact_id": contact_id,
+        "email": email,
+        "email_normalized": _normalize_email(email),
         "first_name": c.get("firstname"),
         "last_name": c.get("lastname"),
         "middle_name": c.get("middlename"),
@@ -75,14 +127,28 @@ def format_contact(raw_contact: dict) -> dict:
     }
 
 
-def format_transaction(raw_transaction: dict) -> dict:
+def format_transaction(raw_transaction: dict, contact_id: Optional[str] = None) -> dict:
     """Transform raw transaction from API to Fivetran-compliant row.
 
-    Flattens some nested structures and serializes complex ones.
+    References contact via contact_id (FK to contacts table).
+    Includes raw contact_email for reference and donor_id.
+
+    Args:
+        raw_transaction: Raw transaction dict from API
+        contact_id: Pre-computed contact_id for this transaction's contact.
+                    If None, will be extracted/generated from nested contact.
+
+    Returns:
+        Normalized transaction row for Fivetran
     """
     t = raw_transaction
 
-    # Build the base transaction row
+    # Extract or generate contact_id if not provided
+    if contact_id is None:
+        contact = t.get("contact", {})
+        contact_id = _extract_or_hash_contact_id(contact) if contact else None
+
+    # Build the transaction row
     row = {
         "id": t.get("id"),
         "organization_id": t.get("organization_id"),
@@ -94,9 +160,10 @@ def format_transaction(raw_transaction: dict) -> dict:
         # Dates
         "created": _format_date(t.get("created")),
         "final_date": _format_date(t.get("final_date")),
-        # Donor/Contact (FK to contacts table)
+        # Donor/Contact references
         "donor_id": t.get("donor_id"),
-        "contact_email": t.get("contact", {}).get("email") if t.get("contact") else None,
+        "contact_id": contact_id,
+        "contact_email_raw": t.get("contact", {}).get("email") if t.get("contact") else None,
         # Payment info
         "card_type": t.get("card_type"),
         "last_four_digits": t.get("last_four_digits"),
@@ -109,7 +176,9 @@ def format_transaction(raw_transaction: dict) -> dict:
         # Campaign/Program
         "campaign_id": t.get("campaign_id"),
         "campaign_title": t.get("campaign_title"),
-        "designation_id": t.get("designation", {}).get("id") if t.get("designation") else None,
+        "designation_id": t.get("designation", {}).get("id")
+        if t.get("designation")
+        else None,
         "designation_title": t.get("designation", {}).get("title")
         if t.get("designation")
         else None,
@@ -150,7 +219,9 @@ def format_transaction(raw_transaction: dict) -> dict:
         "company_name": t.get("company_name"),
         # Serialized complex objects (store as JSON strings)
         "advocate": _serialize_nested_object(t.get("advocate")),
-        "corporate_matching": _serialize_nested_object(t.get("corporate_matching_record")),
+        "corporate_matching": _serialize_nested_object(
+            t.get("corporate_matching_record")
+        ),
         "embed": _serialize_nested_object(t.get("embed")),
         "tribute": _serialize_nested_object(t.get("tribute")),
         "utm": _serialize_nested_object(t.get("utm")),

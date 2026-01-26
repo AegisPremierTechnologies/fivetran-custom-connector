@@ -19,10 +19,12 @@ def schema(_configuration: dict):
     return [
         {
             "table": "contacts",
-            "primary_key": ["email"],
+            "primary_key": ["contact_id"],
             "columns": {
-                # Core identifiers
+                # Core identifiers (synthetic stable key)
+                "contact_id": "STRING",
                 "email": "STRING",
+                "email_normalized": "STRING",
                 # Name fields
                 "first_name": "STRING",
                 "last_name": "STRING",
@@ -60,9 +62,10 @@ def schema(_configuration: dict):
                 # Dates
                 "created": "UTC_DATETIME",
                 "final_date": "UTC_DATETIME",
-                # Donor/Contact (FK to contacts table)
+                # Donor/Contact references
                 "donor_id": "STRING",
-                "contact_email": "STRING",
+                "contact_id": "STRING",
+                "contact_email_raw": "STRING",
                 # Payment info
                 "card_type": "STRING",
                 "last_four_digits": "STRING",

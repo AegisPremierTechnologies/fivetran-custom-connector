@@ -7,7 +7,11 @@ from fivetran_connector_sdk import Logging as log
 from fivetran_connector_sdk import Operations as op
 
 from api import query_transactions
-from models import format_contact, format_transaction
+from models import (
+    _extract_or_hash_contact_id,
+    format_contact,
+    format_transaction,
+)
 
 
 # Batching configuration
@@ -123,7 +127,11 @@ def sync_transactions_date_range(
     start_date: str,
     end_date: str,
 ):
-    """Sync transactions and contacts for a specific date range. Yields upsert operations."""
+    """Sync transactions and contacts with contact_id caching for performance.
+    
+    Maintains in-memory cache of contact_id -> contact to deduplicate lookups.
+    O(n) complexity with single pass through transactions.
+    """
     log.info(f"Syncing transactions from {start_date} to {end_date}")
 
     transactions = fetch_transactions_with_retry(
@@ -133,22 +141,28 @@ def sync_transactions_date_range(
         end_date=end_date,
     )
 
-    # Extract and upsert unique contacts from transactions
-    seen_emails = set()
+    # Contact cache: contact_id -> contact data (enables O(1) dedup)
+    contact_cache = {}
+
+    # First pass: extract unique contacts and upsert
     for transaction in transactions:
         contact = transaction.get("contact")
-        if contact and contact.get("email") and contact.get("email") not in seen_emails:
-            seen_emails.add(contact.get("email"))
-            formatted_contact = format_contact(contact)
-            yield op.upsert(table="contacts", data=formatted_contact)
+        if contact:
+            contact_id = _extract_or_hash_contact_id(contact)
+            if contact_id not in contact_cache:
+                contact_cache[contact_id] = contact
+                formatted_contact = format_contact(contact, contact_id=contact_id)
+                yield op.upsert(table="contacts", data=formatted_contact)
 
-    # Upsert transactions
+    # Second pass: upsert transactions with contact_id reference
     for transaction in transactions:
-        formatted = format_transaction(transaction)
+        contact = transaction.get("contact")
+        contact_id = _extract_or_hash_contact_id(contact) if contact else None
+        formatted = format_transaction(transaction, contact_id=contact_id)
         yield op.upsert(table="transactions", data=formatted)
 
     log.info(
-        f"Synced {len(transactions)} transactions and {len(seen_emails)} unique contacts"
+        f"Synced {len(transactions)} transactions and {len(contact_cache)} unique contacts"
     )
 
 
@@ -171,6 +185,7 @@ def sync_transactions_batched(
     current_dt = start_dt
 
     batch_num = 0
+    contact_cache = {}  # Persists across batches for O(1) dedup
 
     while current_dt < end_dt:
         batch_num += 1
@@ -192,27 +207,28 @@ def sync_transactions_batched(
             end_date=batch_end,
         )
 
-        # Extract and upsert unique contacts from transactions
-        seen_emails = set()
+        # First pass: extract unique contacts and upsert (using contact_id cache)
+        batch_contacts = 0
         for transaction in transactions:
             contact = transaction.get("contact")
-            if (
-                contact
-                and contact.get("email")
-                and contact.get("email") not in seen_emails
-            ):
-                seen_emails.add(contact.get("email"))
-                formatted_contact = format_contact(contact)
-                yield op.upsert(table="contacts", data=formatted_contact)
+            if contact:
+                contact_id = _extract_or_hash_contact_id(contact)
+                if contact_id not in contact_cache:
+                    contact_cache[contact_id] = contact
+                    batch_contacts += 1
+                    formatted_contact = format_contact(contact, contact_id=contact_id)
+                    yield op.upsert(table="contacts", data=formatted_contact)
 
-        # Upsert transactions
+        # Second pass: upsert transactions with contact_id reference
         for transaction in transactions:
-            formatted = format_transaction(transaction)
+            contact = transaction.get("contact")
+            contact_id = _extract_or_hash_contact_id(contact) if contact else None
+            formatted = format_transaction(transaction, contact_id=contact_id)
             yield op.upsert(table="transactions", data=formatted)
 
         count = len(transactions)
         log.info(
-            f"Batch {batch_num} returned {count} transactions and {len(seen_emails)} unique contacts"
+            f"Batch {batch_num} returned {count} transactions, {batch_contacts} new contacts, {len(contact_cache)} total unique contacts"
         )
 
         # Move to next batch
