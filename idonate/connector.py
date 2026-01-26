@@ -18,6 +18,33 @@ def schema(_configuration: dict):
     """Define the schema for Fivetran tables."""
     return [
         {
+            "table": "contacts",
+            "primary_key": ["email"],
+            "columns": {
+                # Core identifiers
+                "email": "STRING",
+                # Name fields
+                "first_name": "STRING",
+                "last_name": "STRING",
+                "middle_name": "STRING",
+                "title": "STRING",
+                # Contact methods
+                "phone": "STRING",
+                "timezone": "STRING",
+                # Address
+                "address_street": "STRING",
+                "address_street2": "STRING",
+                "address_city": "STRING",
+                "address_state": "STRING",
+                "address_zip": "STRING",
+                "address_country": "STRING",
+                "address_country_code": "STRING",
+                # Timestamps
+                "created": "UTC_DATETIME",
+                "updated": "UTC_DATETIME",
+            },
+        },
+        {
             "table": "transactions",
             "primary_key": ["id"],
             "columns": {
@@ -33,20 +60,9 @@ def schema(_configuration: dict):
                 # Dates
                 "created": "UTC_DATETIME",
                 "final_date": "UTC_DATETIME",
-                # Donor/Contact
+                # Donor/Contact (FK to contacts table)
                 "donor_id": "STRING",
                 "contact_email": "STRING",
-                "contact_first_name": "STRING",
-                "contact_last_name": "STRING",
-                "contact_phone": "STRING",
-                # Address fields (flattened)
-                "address_street": "STRING",
-                "address_street2": "STRING",
-                "address_city": "STRING",
-                "address_state": "STRING",
-                "address_zip": "STRING",
-                "address_country": "STRING",
-                "address_country_code": "STRING",
                 # Payment info
                 "card_type": "STRING",
                 "last_four_digits": "STRING",
@@ -96,7 +112,6 @@ def schema(_configuration: dict):
                 "company_name": "STRING",
                 # Serialized complex objects (stored as JSON strings)
                 "advocate": "STRING",
-                "contact_data": "STRING",
                 "corporate_matching": "STRING",
                 "embed": "STRING",
                 "tribute": "STRING",
@@ -132,8 +147,8 @@ def update(configuration: dict, state: dict):
     elif not is_debug_mode:
         log.info("Performing initial sync")
 
-    # Sync transactions
-    log.info("Syncing transactions...")
+    # Sync transactions and contacts
+    log.info("Syncing transactions and contacts...")
     yield from sync_organization(
         configuration=configuration,
         organization_id=organization_id,
@@ -148,7 +163,8 @@ def update(configuration: dict, state: dict):
             f"Debug mode: setting next sync time to debug_end_date: {next_sync_time}"
         )
     else:
-        next_sync_time = datetime.utcnow().isoformat() + "Z"
+        # Store in API format (YYYYMMDDTHHmmss) for next sync
+        next_sync_time = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
 
     final_state = {
         "last_sync_time": next_sync_time,

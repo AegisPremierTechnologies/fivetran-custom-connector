@@ -51,6 +51,30 @@ def _flatten_address(address: Optional[Dict]) -> Dict[str, Optional[str]]:
     }
 
 
+def format_contact(raw_contact: dict) -> dict:
+    """Transform raw contact from API to Fivetran-compliant row.
+
+    Extracts contact data and flattens address.
+    Primary key is email.
+    """
+    c = raw_contact
+
+    return {
+        "email": c.get("email"),
+        "first_name": c.get("firstname"),
+        "last_name": c.get("lastname"),
+        "middle_name": c.get("middlename"),
+        "title": c.get("title"),
+        "phone": c.get("phone"),
+        "timezone": c.get("timezone"),
+        # Flatten address
+        **_flatten_address(c.get("address")),
+        # Timestamps
+        "created": _format_date(c.get("created")),
+        "updated": _format_date(c.get("updated")),
+    }
+
+
 def format_transaction(raw_transaction: dict) -> dict:
     """Transform raw transaction from API to Fivetran-compliant row.
 
@@ -70,18 +94,9 @@ def format_transaction(raw_transaction: dict) -> dict:
         # Dates
         "created": _format_date(t.get("created")),
         "final_date": _format_date(t.get("final_date")),
-        # Donor/Contact info
+        # Donor/Contact (FK to contacts table)
         "donor_id": t.get("donor_id"),
         "contact_email": t.get("contact", {}).get("email") if t.get("contact") else None,
-        "contact_first_name": t.get("contact", {}).get("firstname")
-        if t.get("contact")
-        else None,
-        "contact_last_name": t.get("contact", {}).get("lastname")
-        if t.get("contact")
-        else None,
-        "contact_phone": t.get("contact", {}).get("phone") if t.get("contact") else None,
-        # Flatten primary address
-        **_flatten_address(t.get("address")),
         # Payment info
         "card_type": t.get("card_type"),
         "last_four_digits": t.get("last_four_digits"),
@@ -135,7 +150,6 @@ def format_transaction(raw_transaction: dict) -> dict:
         "company_name": t.get("company_name"),
         # Serialized complex objects (store as JSON strings)
         "advocate": _serialize_nested_object(t.get("advocate")),
-        "contact_data": _serialize_nested_object(t.get("contact")),
         "corporate_matching": _serialize_nested_object(t.get("corporate_matching_record")),
         "embed": _serialize_nested_object(t.get("embed")),
         "tribute": _serialize_nested_object(t.get("tribute")),

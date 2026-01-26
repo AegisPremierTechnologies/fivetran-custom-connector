@@ -4,7 +4,7 @@ Simple API layer - returns raw JSON responses. Error handling and retries
 are handled at the sync layer.
 """
 
-from typing import Optional
+# from typing import Optional
 
 import requests as rq
 from fivetran_connector_sdk import Logging as log
@@ -14,8 +14,6 @@ def get_headers(configuration: dict) -> dict:
     """Build request headers with API key authentication."""
     return {
         "apiKey": configuration["api_key"],
-        "Accept": "application/json",
-        "Content-Type": "application/json",
     }
 
 
@@ -40,8 +38,8 @@ def query_transactions(
     Args:
         configuration: Connector configuration with api_key and base_url
         organization_id: Organization ID to query
-        start_date: ISO8601 start date (required)
-        end_date: ISO8601 end date (required)
+        start_date: Date in format YYYYMMDDTHHmmss (required)
+        end_date: Date in format YYYYMMDDTHHmmss (required)
         page: Page number (1-indexed)
         per_page: Results per page (1-100)
         include_children: If true, include child organizations
@@ -83,6 +81,7 @@ def query_transactions(
     # Log status for debugging
     if response.status_code != 200:
         log.warning(f"Response status: {response.status_code}")
+        log.warning(f"Response content: {response.content}")
 
     response.raise_for_status()
     return response.json()

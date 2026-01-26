@@ -7,7 +7,7 @@ from fivetran_connector_sdk import Logging as log
 from fivetran_connector_sdk import Operations as op
 
 from api import query_transactions
-from models import format_transaction
+from models import format_contact, format_transaction
 
 
 # Batching configuration
@@ -15,6 +15,29 @@ INITIAL_BATCH_DAYS = 30  # Start with 30-day batches
 MIN_BATCH_DAYS = 1  # Minimum batch size: 1 day
 MAX_RETRIES_PER_BATCH = 3
 PAGE_SIZE = 100  # iDonate max is 100 per page
+
+
+def format_date_for_api(dt: datetime) -> str:
+    """Format datetime for iDonate API: YYYYMMDDTHHmmss"""
+    return dt.strftime("%Y%m%dT%H%M%S")
+
+
+def parse_api_date(date_str: str) -> datetime:
+    """Parse iDonate API date format or ISO format to datetime."""
+    # Try API format first (YYYYMMDDTHHmmss)
+    try:
+        return datetime.strptime(date_str, "%Y%m%dT%H%M%S")
+    except ValueError:
+        pass
+    
+    # Try ISO format with Z
+    try:
+        return datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+    except ValueError:
+        pass
+    
+    # Try ISO format without timezone
+    return datetime.fromisoformat(date_str)
 
 
 def fetch_transactions_for_date_range(
@@ -47,7 +70,7 @@ def fetch_transactions_for_date_range(
             result = response.get("result", {})
             items = result.get("items", [])
             count = result.get("count", 0)
-            total_count = result.get("total_count", 0)
+            # total_count = result.get("total_count", 0)
 
             if not items:
                 log.info(
@@ -100,7 +123,7 @@ def sync_transactions_date_range(
     start_date: str,
     end_date: str,
 ):
-    """Sync transactions for a specific date range. Yields upsert operations."""
+    """Sync transactions and contacts for a specific date range. Yields upsert operations."""
     log.info(f"Syncing transactions from {start_date} to {end_date}")
 
     transactions = fetch_transactions_with_retry(
@@ -110,11 +133,23 @@ def sync_transactions_date_range(
         end_date=end_date,
     )
 
+    # Extract and upsert unique contacts from transactions
+    seen_emails = set()
+    for transaction in transactions:
+        contact = transaction.get("contact")
+        if contact and contact.get("email") and contact.get("email") not in seen_emails:
+            seen_emails.add(contact.get("email"))
+            formatted_contact = format_contact(contact)
+            yield op.upsert(table="contacts", data=formatted_contact)
+
+    # Upsert transactions
     for transaction in transactions:
         formatted = format_transaction(transaction)
         yield op.upsert(table="transactions", data=formatted)
 
-    log.info(f"Synced {len(transactions)} transactions")
+    log.info(
+        f"Synced {len(transactions)} transactions and {len(seen_emails)} unique contacts"
+    )
 
 
 def sync_transactions_batched(
@@ -129,8 +164,8 @@ def sync_transactions_batched(
     Checkpoints after each batch.
     """
     # Parse dates
-    start_dt = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
-    end_dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+    start_dt = parse_api_date(start_date)
+    end_dt = parse_api_date(end_date)
 
     batch_days = INITIAL_BATCH_DAYS
     current_dt = start_dt
@@ -143,8 +178,8 @@ def sync_transactions_batched(
         # Calculate batch end (don't exceed overall end_date)
         batch_end_dt = min(current_dt + timedelta(days=batch_days), end_dt)
 
-        batch_start = current_dt.isoformat().replace("+00:00", "Z")
-        batch_end = batch_end_dt.isoformat().replace("+00:00", "Z")
+        batch_start = format_date_for_api(current_dt)
+        batch_end = format_date_for_api(batch_end_dt)
 
         log.info(
             f"Batch {batch_num}: Syncing transactions from {batch_start} to {batch_end}"
@@ -157,12 +192,28 @@ def sync_transactions_batched(
             end_date=batch_end,
         )
 
+        # Extract and upsert unique contacts from transactions
+        seen_emails = set()
+        for transaction in transactions:
+            contact = transaction.get("contact")
+            if (
+                contact
+                and contact.get("email")
+                and contact.get("email") not in seen_emails
+            ):
+                seen_emails.add(contact.get("email"))
+                formatted_contact = format_contact(contact)
+                yield op.upsert(table="contacts", data=formatted_contact)
+
+        # Upsert transactions
         for transaction in transactions:
             formatted = format_transaction(transaction)
             yield op.upsert(table="transactions", data=formatted)
 
         count = len(transactions)
-        log.info(f"Batch {batch_num} returned {count} transactions")
+        log.info(
+            f"Batch {batch_num} returned {count} transactions and {len(seen_emails)} unique contacts"
+        )
 
         # Move to next batch
         current_dt = batch_end_dt
@@ -187,7 +238,7 @@ def sync_organization(
 
     if debug_start:
         start_date = debug_start
-        end_date = debug_end or datetime.utcnow().isoformat() + "Z"
+        end_date = debug_end or format_date_for_api(datetime.utcnow())
         log.info(f"Debug mode: syncing from {start_date} to {end_date}")
         yield from sync_transactions_date_range(
             configuration, organization_id, start_date, end_date
@@ -196,7 +247,7 @@ def sync_organization(
 
     if last_sync_time:
         # Incremental sync: fetch from last sync to now
-        now = datetime.utcnow().isoformat() + "Z"
+        now = format_date_for_api(datetime.utcnow())
         log.info(f"Incremental sync from {last_sync_time} to {now}")
         yield from sync_transactions_date_range(
             configuration, organization_id, last_sync_time, now
@@ -205,9 +256,9 @@ def sync_organization(
         # Initial sync: fetch all historical data using batched approach
         # Assume we start from 1 year ago (configurable)
         days_back = configuration.get("initial_sync_days_back", 365)
-        start_dt = datetime.utcnow() - timedelta(days=days_back)
-        start_date = start_dt.isoformat() + "Z"
-        end_date = datetime.utcnow().isoformat() + "Z"
+        start_dt = datetime.utcnow() - timedelta(days=int(days_back))
+        start_date = format_date_for_api(start_dt)
+        end_date = format_date_for_api(datetime.utcnow())
 
         log.info(
             f"Initial sync using batching, fetching last {days_back} days of data"
