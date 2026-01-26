@@ -119,6 +119,7 @@ def schema(_configuration: dict):
                 "embed": "STRING",
                 "tribute": "STRING",
                 "utm": "STRING",
+                "customer_meta": "STRING",
             },
         },
     ]

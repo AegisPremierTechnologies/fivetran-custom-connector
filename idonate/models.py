@@ -225,6 +225,7 @@ def format_transaction(raw_transaction: dict, contact_id: Optional[str] = None) 
         "embed": _serialize_nested_object(t.get("embed")),
         "tribute": _serialize_nested_object(t.get("tribute")),
         "utm": _serialize_nested_object(t.get("utm")),
+        "customer_meta": _serialize_nested_object(t.get("customer_meta")),
     }
 
     return row
