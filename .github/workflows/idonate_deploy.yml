@@ -6,12 +6,6 @@ on:
       - "idonate/**"
       - ".github/workflows/idonate_deploy.yml"
 
-  pull_request:
-    branches: [main]
-    paths:
-      - "idonate/**"
-      - ".github/workflows/idonate_deploy.yml"
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -44,8 +38,6 @@ jobs:
             "base_url": "$THF_IDONATE_BASEURL",
             "organization_id": "$THF_IDONATE_ORGID",
             "initial_sync_days_back": "1200",
-            "debug_start_date": "",
-            "debug_end_date": ""
           }
           EOF
 
