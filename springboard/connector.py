@@ -1,36 +1,32 @@
-"""Springboard (Heartland Retail) Fivetran Custom Connector.
+"""Springboard (Jackson River) Fivetran Custom Connector.
 
-Syncs sales ticket data from the Heartland Retail POS API.
+Syncs donation form data from the Springboard nonprofit fundraising platform.
+API docs: https://springboardapiv2.docs.apiary.io/
 """
 
 from fivetran_connector_sdk import Connector
 from fivetran_connector_sdk import Logging as log
 from fivetran_connector_sdk import Operations as op
 
-from sync import sync_tickets
+from sync import sync_donation_forms
+
+HELLO_WORLD_LIMIT = 5
 
 
 def schema(_configuration: dict):
     """Define the Fivetran warehouse schema for Springboard data."""
     return [
         {
-            "table": "tickets",
-            "primary_key": ["id"],
+            "table": "donation_forms",
+            "primary_key": ["nid"],
             "columns": {
-                "id": "STRING",
+                "nid": "STRING",
                 "type": "STRING",
-                "status": "STRING",
-                "total": "FLOAT",
-                "customer_id": "STRING",
-                "source_location_id": "STRING",
-                "station_id": "STRING",
-                "parent_transaction_id": "STRING",
-                "created_by_user_id": "STRING",
-                "updated_by_user_id": "STRING",
-                "coupon_id": "STRING",
-                "completed_at": "UTC_DATETIME",
-                "local_created_at": "UTC_DATETIME",
-                "local_updated_at": "UTC_DATETIME",
+                "title": "STRING",
+                "internal_name": "STRING",
+                "body": "STRING",
+                "fields": "STRING",
+                "token": "STRING",
             },
         },
     ]
@@ -40,7 +36,8 @@ def update(configuration: dict, state: dict):
     """Main sync driver. Delegates to sync layer, then checkpoints."""
     log.info("Springboard Connector: starting sync")
 
-    yield from sync_tickets(configuration, state)
+    limit = int(configuration.get("limit", HELLO_WORLD_LIMIT))
+    yield from sync_donation_forms(configuration, state, limit=limit)
 
     yield op.checkpoint(state=state)
     log.info("Springboard Connector: sync complete")

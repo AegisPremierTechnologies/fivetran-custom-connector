@@ -1,9 +1,10 @@
-"""Data transformations for Springboard (Heartland Retail) connector.
+"""Data transformations for Springboard (Jackson River) connector.
 
-Pure input/output: maps raw API ticket JSON to flat row dicts matching
+Pure input/output: maps raw API JSON to flat row dicts matching
 the Fivetran schema. No side effects, no HTTP, no Fivetran operations.
 """
 
+import json
 from typing import Any, Optional
 
 
@@ -12,30 +13,54 @@ def _safe_str(value: Any) -> Optional[str]:
     return str(value) if value is not None else None
 
 
-def format_ticket(raw: dict) -> dict:
-    """Transform a raw sales ticket from the API into a Fivetran-compatible row.
+def _serialize_nested(obj: Any) -> Optional[str]:
+    """Serialize nested objects to JSON string for storage in STRING columns."""
+    if obj is None:
+        return None
+    if isinstance(obj, str):
+        return obj
+    return json.dumps(obj)
 
-    Maps top-level ticket fields. Line items are deferred to a future table.
+
+def format_donation_form(raw: dict) -> dict:
+    """Transform a donation form summary from the list endpoint into a row.
 
     Args:
-        raw: Single ticket dict from API results array.
+        raw: Single form dict from the list endpoint.
+             Shape: { nid, type, title, internal_name }
 
     Returns:
-        Flat dict matching the 'tickets' schema columns.
+        Flat dict matching the 'donation_forms' schema columns.
     """
     return {
-        "id": _safe_str(raw.get("id")),
+        "nid": _safe_str(raw.get("nid")),
         "type": raw.get("type"),
-        "status": raw.get("status"),
-        "total": raw.get("total"),
-        "customer_id": _safe_str(raw.get("customer_id")),
-        "source_location_id": _safe_str(raw.get("source_location_id")),
-        "station_id": _safe_str(raw.get("station_id")),
-        "parent_transaction_id": _safe_str(raw.get("parent_transaction_id")),
-        "created_by_user_id": _safe_str(raw.get("created_by_user_id")),
-        "updated_by_user_id": _safe_str(raw.get("updated_by_user_id")),
-        "coupon_id": _safe_str(raw.get("coupon_id")),
-        "completed_at": raw.get("completed_at"),
-        "local_created_at": raw.get("local_created_at"),
-        "local_updated_at": raw.get("local_updated_at"),
+        "title": raw.get("title"),
+        "internal_name": raw.get("internal_name"),
+    }
+
+
+def format_donation_form_detail(raw: dict) -> dict:
+    """Transform a full form detail response into a row.
+
+    Includes the summary fields plus body text and serialized fields metadata.
+
+    Args:
+        raw: Full form detail dict from the detail endpoint.
+
+    Returns:
+        Flat dict matching the 'donation_forms' schema columns.
+    """
+    body_data = raw.get("body", {})
+    body_und = body_data.get("und", [{}]) if isinstance(body_data, dict) else [{}]
+    body_text = body_und[0].get("safe_value") if body_und else None
+
+    return {
+        "nid": _safe_str(raw.get("nid")),
+        "type": raw.get("type"),
+        "title": raw.get("title"),
+        "internal_name": raw.get("internal_name"),
+        "body": body_text,
+        "fields": _serialize_nested(raw.get("fields")),
+        "token": raw.get("token"),
     }

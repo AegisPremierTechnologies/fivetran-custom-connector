@@ -1,63 +1,46 @@
-"""Sync orchestration for Springboard (Heartland Retail) connector.
+"""Sync orchestration for Springboard (Jackson River) connector.
 
-Handles pagination, state management, and yielding Fivetran upsert operations.
+Handles fetching forms, transforming rows, and yielding Fivetran upsert ops.
 Retry/backoff logic will be added here as complexity grows.
 """
 
 from fivetran_connector_sdk import Logging as log
 from fivetran_connector_sdk import Operations as op
 
-from api import query_tickets
-from models import format_ticket
-
-PAGE_SIZE = 20
+from api import get_form_detail, list_forms
+from models import format_donation_form_detail
 
 
-def sync_tickets(configuration: dict, state: dict):
-    """Fetch all sales tickets via paginated API calls and yield upsert ops.
+def sync_donation_forms(configuration: dict, state: dict, limit: int = 0):
+    """Fetch donation forms and yield upsert ops with full detail.
 
-    Iterates through pages until all results are consumed.
-    Each ticket is transformed via format_ticket before upserting.
+    Lists all donation_form nodes, then fetches detail for each.
+    An optional limit keeps hello-world runs small.
 
     Args:
-        configuration: Connector config with subdomain + api_token.
-        state: Connector state dict (unused in hello world, reserved for
-               incremental sync cursors in future).
+        configuration: Connector config with base_url + api_key.
+        state: Connector state dict (reserved for incremental sync).
+        limit: Max forms to sync. 0 means all.
 
     Yields:
-        op.upsert for each ticket row.
+        op.upsert for each donation form row.
     """
-    page = 1
-    total_synced = 0
+    forms = list_forms(configuration, node_type="donation_form")
+    log.info(f"Found {len(forms)} donation forms")
 
-    while True:
-        response = query_tickets(
-            configuration=configuration,
-            page=page,
-            per_page=PAGE_SIZE,
-        )
+    if limit > 0:
+        forms = forms[:limit]
+        log.info(f"Limiting to first {limit} forms for hello world")
 
-        total = response.get("total", 0)
-        total_pages = response.get("pages", 1)
-        results = response.get("results", [])
+    for i, form_summary in enumerate(forms, 1):
+        nid = form_summary.get("nid")
+        detail = get_form_detail(configuration, form_id=nid)
 
-        if not results:
-            log.info(f"No results on page {page}, stopping.")
-            break
+        if isinstance(detail, list) and len(detail) > 0:
+            detail = detail[0]
 
-        for raw_ticket in results:
-            row = format_ticket(raw_ticket)
-            yield op.upsert(table="tickets", data=row)
-            total_synced += 1
+        row = format_donation_form_detail(detail)
+        yield op.upsert(table="donation_forms", data=row)
+        log.info(f"Synced form {i}/{len(forms)}: nid={nid} title={form_summary.get('title')}")
 
-        log.info(
-            f"Page {page}/{total_pages}: synced {len(results)} tickets "
-            f"({total_synced} total, {total} in API)"
-        )
-
-        if page >= total_pages:
-            break
-
-        page += 1
-
-    log.info(f"Finished syncing tickets: {total_synced} rows")
+    log.info(f"Finished syncing {len(forms)} donation forms")

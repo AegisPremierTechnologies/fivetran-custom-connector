@@ -1,54 +1,83 @@
-"""Heartland Retail (Springboard) API client.
+"""Springboard (Jackson River) API client.
 
 Thin HTTP layer returning raw JSON. No Fivetran operations, no retry logic.
 Error handling and retries belong in sync.py.
+
+API docs: https://springboardapiv2.docs.apiary.io/
+Auth: api_key query parameter on every request.
 """
 
 import requests as rq
 from fivetran_connector_sdk import Logging as log
 
 
-def get_headers(configuration: dict) -> dict:
-    """Build request headers with Bearer token authentication."""
-    return {
-        "Authorization": f"Bearer {configuration['api_token']}",
-        "Content-Type": "application/json",
-    }
-
-
 def get_base_url(configuration: dict) -> str:
-    """Build the account-specific API base URL from subdomain."""
-    subdomain = configuration["subdomain"]
-    return f"https://{subdomain}.retail.heartland.us/api"
+    """Get the Springboard instance base URL from configuration."""
+    return configuration["base_url"].rstrip("/")
 
 
-def query_tickets(
+def get_api_key(configuration: dict) -> str:
+    """Get the API key from configuration."""
+    return configuration["api_key"]
+
+
+def list_forms(
     configuration: dict,
-    page: int = 1,
-    per_page: int = 20,
-) -> dict:
-    """Fetch a page of sales tickets.
+    node_type: str = "donation_form",
+) -> list[dict]:
+    """List all webforms of a given content type.
 
     Args:
-        configuration: Connector configuration with subdomain and api_token.
-        page: Page number (1-indexed).
-        per_page: Results per page.
+        configuration: Connector config with base_url and api_key.
+        node_type: Springboard node type to filter by.
+                   Options: donation_form, webform, petition, etc.
 
     Returns:
-        Raw API response: { "total": int, "pages": int, "results": [...] }
+        List of form summary dicts, each with: nid, type, title, internal_name.
     """
-    headers = get_headers(configuration)
     base_url = get_base_url(configuration)
-    url = f"{base_url}/sales/tickets"
+    url = f"{base_url}/springboard-api/springboard-forms"
 
     params = {
-        "page": page,
-        "per_page": per_page,
+        "api_key": get_api_key(configuration),
+        "node_type": node_type,
     }
 
-    log.info(f"Querying sales tickets: page {page}, per_page {per_page}")
+    log.info(f"Listing forms: node_type={node_type}")
 
-    response = rq.get(url, headers=headers, params=params, timeout=60)
+    response = rq.get(url, params=params, timeout=60)
+
+    if response.status_code != 200:
+        log.warning(f"Response status: {response.status_code}")
+        log.warning(f"Response body: {response.text[:500]}")
+
+    response.raise_for_status()
+    return response.json()
+
+
+def get_form_detail(
+    configuration: dict,
+    form_id: str,
+) -> dict:
+    """Retrieve detailed information about a single form.
+
+    Args:
+        configuration: Connector config with base_url and api_key.
+        form_id: Numeric node ID of the form.
+
+    Returns:
+        Full form detail dict with fields, body, token, etc.
+    """
+    base_url = get_base_url(configuration)
+    url = f"{base_url}/springboard-api/springboard-forms/{form_id}"
+
+    params = {
+        "api_key": get_api_key(configuration),
+    }
+
+    log.info(f"Fetching form detail: form_id={form_id}")
+
+    response = rq.get(url, params=params, timeout=60)
 
     if response.status_code != 200:
         log.warning(f"Response status: {response.status_code}")
