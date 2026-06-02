@@ -15,11 +15,17 @@ def parse_php_datetime(obj) -> str | None:
     if obj is None:
         return None
     if isinstance(obj, dict):
-        return obj.get("date")
+        date_str = obj.get("date")
+        if date_str is None:
+            return None
+        tz_str = obj.get("timezone", "+00:00")
+        if tz_str == "UTC":
+            tz_str = "+00:00"
+        return date_str.replace(" ", "T", 1) + tz_str
     if isinstance(obj, str):
         if obj.isdigit():
             dt = datetime.fromtimestamp(int(obj), tz=timezone.utc)
-            return dt.strftime("%Y-%m-%d %H:%M:%S.%f")
+            return dt.strftime("%Y-%m-%dT%H:%M:%S.%f+00:00")
         return obj
     return None
 
