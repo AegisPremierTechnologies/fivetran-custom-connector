@@ -1,57 +1,101 @@
 """Sync orchestration for Springboard MongoDB data warehouse connector.
 
-Iterates over sb_* collections, samples documents, logs document shapes,
-and yields Fivetran upsert operations. Designed for iterative exploration
-before building full typed schemas.
+Provides three sync strategies:
+- Historical: walks a collection by _id, checkpoints every batch
+- Incremental: queries by dw_updated_at.date > cursor, checkpoints every batch
+- Full replace: queries all docs (for collections without dw_updated_at)
 """
 
 from fivetran_connector_sdk import Logging as log
 from fivetran_connector_sdk import Operations as op
 
-from db import get_client, get_database, list_collection_names, sample_collection
-from models import extract_field_names, flatten_document
+from db import query_historical, query_incremental, query_all
+from models import format_document
+
+BATCH_SIZE = 1000
 
 
-def explore_collections(configuration: dict, state: dict, sample_size: int = 5):
-    """Sample every sb_* collection, log shapes, and yield upserts.
+def sync_collection_historical(client, collection_name, state, batch_size=BATCH_SIZE):
+    cursor_key = f"{collection_name}_cursor"
+    complete_key = f"{collection_name}_complete"
+    after_id = state.get(cursor_key)
 
-    Args:
-        configuration: Connector config with connection_string + database.
-        state: Connector state dict (reserved for incremental sync).
-        sample_size: Max documents to pull per collection.
+    if state.get(complete_key):
+        log.info(f"{collection_name}: already complete, skipping")
+        return
 
-    Yields:
-        op.upsert for each sampled document.
-    """
-    client = get_client(configuration)
-    try:
-        database = get_database(configuration, client)
-        collections = list_collection_names(database)
+    log.info(f"{collection_name}: historical sync (cursor={after_id})")
+    total = 0
 
-        if not collections:
-            log.warning("No sb_* collections found in database")
-            return
+    while True:
+        docs = query_historical(client, collection_name, after_id, batch_size)
+        batch_count = 0
+        last_id = None
 
-        for collection_name in collections:
-            log.info(f"--- Exploring {collection_name} ---")
+        for doc in docs:
+            row = format_document(collection_name, doc)
+            yield op.upsert(table=collection_name, data=row)
+            last_id = str(doc["_id"])
+            batch_count += 1
 
-            docs = sample_collection(database, collection_name, limit=sample_size)
+        if batch_count == 0:
+            break
 
-            if not docs:
-                log.info(f"  {collection_name}: empty collection, skipping")
-                continue
+        total += batch_count
+        after_id = last_id
+        state[cursor_key] = after_id
+        yield op.checkpoint(state=state)
+        log.info(f"{collection_name}: checkpointed {total} docs (cursor={after_id})")
 
-            field_names = extract_field_names(docs)
-            log.info(f"  {collection_name}: {len(docs)} docs, fields: {field_names}")
+        if batch_count < batch_size:
+            break
 
-            for doc in docs:
-                row = flatten_document(doc)
-                yield op.upsert(table=collection_name, data=row)
+    state[complete_key] = True
+    state.pop(cursor_key, None)
+    yield op.checkpoint(state=state)
+    log.info(f"{collection_name}: historical sync complete ({total} docs)")
 
-            log.info(f"  {collection_name}: upserted {len(docs)} sample rows")
 
-        log.info(f"Exploration complete: sampled {len(collections)} collections")
+def sync_collection_incremental(client, collection_name, since, state, batch_size=BATCH_SIZE):
+    log.info(f"{collection_name}: incremental sync (since={since})")
+    total = 0
 
-    finally:
-        client.close()
-        log.info("MongoDB connection closed")
+    while True:
+        docs = query_incremental(client, collection_name, since, batch_size)
+        batch_count = 0
+        last_timestamp = None
+
+        for doc in docs:
+            row = format_document(collection_name, doc)
+            yield op.upsert(table=collection_name, data=row)
+            dw_updated = doc.get("dw_updated_at", {})
+            if isinstance(dw_updated, dict):
+                last_timestamp = dw_updated.get("date", since)
+            batch_count += 1
+
+        if batch_count == 0:
+            break
+
+        total += batch_count
+        if last_timestamp:
+            since = last_timestamp
+        yield op.checkpoint(state=state)
+        log.info(f"{collection_name}: checkpointed {total} incremental docs")
+
+        if batch_count < batch_size:
+            break
+
+    log.info(f"{collection_name}: incremental sync complete ({total} docs)")
+
+
+def sync_collection_full_replace(client, collection_name):
+    log.info(f"{collection_name}: full replace sync")
+    docs = query_all(client, collection_name)
+    total = 0
+
+    for doc in docs:
+        row = format_document(collection_name, doc)
+        yield op.upsert(table=collection_name, data=row)
+        total += 1
+
+    log.info(f"{collection_name}: full replace complete ({total} docs)")

@@ -1,56 +1,66 @@
-"""Springboard MongoDB Connector -- exploration pass.
+"""Springboard MongoDB Fivetran Custom Connector.
 
-Connects to kqed-staging, samples a few docs from each sb_* collection,
-and logs them raw. No data lands in Fivetran yet -- this is just recon.
+Syncs all sb_* collections from the Springboard data warehouse.
+Supports checkpointed historical sync and incremental sync via dw_updated_at.
 """
 
-import json
-from datetime import datetime
+from datetime import datetime, timezone
 
-from bson import ObjectId
 from fivetran_connector_sdk import Connector
 from fivetran_connector_sdk import Logging as log
 from fivetran_connector_sdk import Operations as op
 
-from db import get_client, list_sb_collections, sample_documents
+from db import get_client, list_sb_collections
+from schemas import get_schemas
+from sync import (
+    sync_collection_full_replace,
+    sync_collection_historical,
+    sync_collection_incremental,
+)
 
-PLACEHOLDER_TABLE = {
-    "table": "placeholder",
-    "primary_key": ["id"],
-    "columns": {"id": "STRING"},
-}
-
-
-def _json_default(o):
-    if isinstance(o, ObjectId):
-        return str(o)
-    if isinstance(o, datetime):
-        return o.isoformat()
-    if isinstance(o, bytes):
-        return o.hex()
-    return str(o)
+FULL_REPLACE_COLLECTIONS = {"sb_sync_failure_counts"}
 
 
 def schema(_configuration: dict):
-    return [PLACEHOLDER_TABLE]
+    return get_schemas()
 
 
 def update(configuration: dict, state: dict):
-    log.info("=== Springboard collection sampler ===")
+    last_sync_time = state.get("last_sync_time")
+    is_historical = last_sync_time is None
+
+    if is_historical:
+        log.info("Starting historical sync")
+    else:
+        log.info(f"Starting incremental sync (since {last_sync_time})")
 
     client = get_client(configuration)
     try:
         collections = list_sb_collections(client)
 
         for name in collections:
-            docs = sample_documents(client, name, limit=1)
-            log.info(f"--- {name} ({len(docs)} docs) ---")
-            if docs:
-                log.info(json.dumps(docs[0], default=_json_default, indent=2))
+            if name in FULL_REPLACE_COLLECTIONS:
+                yield from sync_collection_full_replace(client, name)
+                continue
 
-        yield op.upsert(table="placeholder", data={"id": "done"})
+            if is_historical:
+                yield from sync_collection_historical(client, name, state)
+            else:
+                yield from sync_collection_incremental(
+                    client, name, last_sync_time, state,
+                )
+
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
+
+        if is_historical:
+            for key in list(state.keys()):
+                if key.endswith("_complete") or key.endswith("_cursor"):
+                    del state[key]
+
+        state["last_sync_time"] = now
+
         yield op.checkpoint(state=state)
-        log.info("=== Sampling complete ===")
+        log.info(f"Sync complete. Next sync from {now}")
 
     finally:
         client.close()
