@@ -43,10 +43,10 @@ def update(configuration: dict, state: dict):
         collections = list_sb_collections(client)
 
         for name in collections:
-            docs = sample_documents(client, name, limit=3)
+            docs = sample_documents(client, name, limit=1)
             log.info(f"--- {name} ({len(docs)} docs) ---")
-            for doc in docs:
-                log.info(json.dumps(doc, default=_json_default, indent=2))
+            if docs:
+                log.info(json.dumps(docs[0], default=_json_default, indent=2))
 
         yield op.upsert(table="placeholder", data={"id": "done"})
         yield op.checkpoint(state=state)
