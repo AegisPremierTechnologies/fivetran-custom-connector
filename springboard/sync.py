@@ -57,6 +57,11 @@ def sync_collection_historical(client, collection_name, state, batch_size=BATCH_
 
 
 def sync_collection_incremental(client, collection_name, since, state, batch_size=BATCH_SIZE):
+    cursor_key = f"{collection_name}_inc_cursor"
+    saved_cursor = state.get(cursor_key)
+    if saved_cursor:
+        since = saved_cursor
+
     log.info(f"{collection_name}: incremental sync (since={since})")
     total = 0
 
@@ -79,16 +84,18 @@ def sync_collection_incremental(client, collection_name, since, state, batch_siz
         total += batch_count
         if last_timestamp:
             since = last_timestamp
+            state[cursor_key] = since
         yield op.checkpoint(state=state)
         log.info(f"{collection_name}: checkpointed {total} incremental docs")
 
         if batch_count < batch_size:
             break
 
+    state.pop(cursor_key, None)
     log.info(f"{collection_name}: incremental sync complete ({total} docs)")
 
 
-def sync_collection_full_replace(client, collection_name):
+def sync_collection_full_replace(client, collection_name, state):
     log.info(f"{collection_name}: full replace sync")
     docs = query_all(client, collection_name)
     total = 0
@@ -98,4 +105,5 @@ def sync_collection_full_replace(client, collection_name):
         yield op.upsert(table=collection_name, data=row)
         total += 1
 
+    yield op.checkpoint(state=state)
     log.info(f"{collection_name}: full replace complete ({total} docs)")

@@ -40,7 +40,7 @@ def update(configuration: dict, state: dict):
 
         for name in collections:
             if name in FULL_REPLACE_COLLECTIONS:
-                yield from sync_collection_full_replace(client, name)
+                yield from sync_collection_full_replace(client, name, state)
                 continue
 
             if is_historical:
@@ -51,15 +51,8 @@ def update(configuration: dict, state: dict):
                 )
 
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
-
-        if is_historical:
-            for key in list(state.keys()):
-                if key.endswith("_complete") or key.endswith("_cursor"):
-                    del state[key]
-
-        state["last_sync_time"] = now
-
-        yield op.checkpoint(state=state)
+        final_state = {"last_sync_time": now}
+        yield op.checkpoint(state=final_state)
         log.info(f"Sync complete. Next sync from {now}")
 
     finally:
