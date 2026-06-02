@@ -4,7 +4,7 @@ from bson import ObjectId
 from pymongo import ASCENDING, MongoClient
 from fivetran_connector_sdk import Logging as log
 
-DATABASE = "kqed-staging"
+DATABASE = "kqed"
 
 
 def get_client(configuration: dict) -> MongoClient:
