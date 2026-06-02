@@ -1,66 +1,60 @@
-"""Data transformations for Springboard (Jackson River) connector.
+"""Data transformations for Springboard MongoDB documents.
 
-Pure input/output: maps raw API JSON to flat row dicts matching
-the Fivetran schema. No side effects, no HTTP, no Fivetran operations.
+Pure input/output: converts BSON documents to Fivetran-compatible row dicts.
+No side effects, no database access, no Fivetran operations.
 """
 
 import json
+from datetime import datetime
 from typing import Any, Optional
 
-
-def _safe_str(value: Any) -> Optional[str]:
-    """Cast to string if not None. IDs should be STRING per repo convention."""
-    return str(value) if value is not None else None
+from bson import ObjectId
 
 
-def _serialize_nested(obj: Any) -> Optional[str]:
-    """Serialize nested objects to JSON string for storage in STRING columns."""
-    if obj is None:
-        return None
-    if isinstance(obj, str):
-        return obj
-    return json.dumps(obj)
+class BSONEncoder(json.JSONEncoder):
+    """JSON encoder that handles common BSON types from MongoDB."""
+
+    def default(self, o: Any) -> Any:
+        if isinstance(o, ObjectId):
+            return str(o)
+        if isinstance(o, datetime):
+            return o.isoformat()
+        if isinstance(o, bytes):
+            return o.hex()
+        return super().default(o)
 
 
-def format_donation_form(raw: dict) -> dict:
-    """Transform a donation form summary from the list endpoint into a row.
+def flatten_document(doc: dict) -> dict:
+    """Convert a MongoDB document to a flat two-column row for Fivetran.
+
+    The _id is extracted as a STRING primary key. The entire document
+    (including _id) is serialized as a JSON string in raw_document.
 
     Args:
-        raw: Single form dict from the list endpoint.
-             Shape: { nid, type, title, internal_name }
+        doc: Raw MongoDB document dict.
 
     Returns:
-        Flat dict matching the 'donation_forms' schema columns.
+        { "_id": str, "raw_document": str }
     """
+    doc_id = doc.get("_id")
     return {
-        "nid": _safe_str(raw.get("nid")),
-        "type": raw.get("type"),
-        "title": raw.get("title"),
-        "internal_name": raw.get("internal_name"),
+        "_id": str(doc_id) if doc_id is not None else None,
+        "raw_document": json.dumps(doc, cls=BSONEncoder, default=str),
     }
 
 
-def format_donation_form_detail(raw: dict) -> dict:
-    """Transform a full form detail response into a row.
+def extract_field_names(docs: list[dict]) -> list[str]:
+    """Collect the union of all top-level keys across a batch of documents.
 
-    Includes the summary fields plus body text and serialized fields metadata.
+    Useful for logging document shapes during exploration.
 
     Args:
-        raw: Full form detail dict from the detail endpoint.
+        docs: List of MongoDB document dicts.
 
     Returns:
-        Flat dict matching the 'donation_forms' schema columns.
+        Sorted list of unique top-level field names.
     """
-    body_data = raw.get("body", {})
-    body_und = body_data.get("und", [{}]) if isinstance(body_data, dict) else [{}]
-    body_text = body_und[0].get("safe_value") if body_und else None
-
-    return {
-        "nid": _safe_str(raw.get("nid")),
-        "type": raw.get("type"),
-        "title": raw.get("title"),
-        "internal_name": raw.get("internal_name"),
-        "body": body_text,
-        "fields": _serialize_nested(raw.get("fields")),
-        "token": raw.get("token"),
-    }
+    keys: set[str] = set()
+    for doc in docs:
+        keys.update(doc.keys())
+    return sorted(keys)

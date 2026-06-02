@@ -1,46 +1,57 @@
-"""Sync orchestration for Springboard (Jackson River) connector.
+"""Sync orchestration for Springboard MongoDB data warehouse connector.
 
-Handles fetching forms, transforming rows, and yielding Fivetran upsert ops.
-Retry/backoff logic will be added here as complexity grows.
+Iterates over sb_* collections, samples documents, logs document shapes,
+and yields Fivetran upsert operations. Designed for iterative exploration
+before building full typed schemas.
 """
 
 from fivetran_connector_sdk import Logging as log
 from fivetran_connector_sdk import Operations as op
 
-from api import get_form_detail, list_forms
-from models import format_donation_form_detail
+from db import get_client, get_database, list_collection_names, sample_collection
+from models import extract_field_names, flatten_document
 
 
-def sync_donation_forms(configuration: dict, state: dict, limit: int = 0):
-    """Fetch donation forms and yield upsert ops with full detail.
-
-    Lists all donation_form nodes, then fetches detail for each.
-    An optional limit keeps hello-world runs small.
+def explore_collections(configuration: dict, state: dict, sample_size: int = 5):
+    """Sample every sb_* collection, log shapes, and yield upserts.
 
     Args:
-        configuration: Connector config with base_url + api_key.
+        configuration: Connector config with connection_string + database.
         state: Connector state dict (reserved for incremental sync).
-        limit: Max forms to sync. 0 means all.
+        sample_size: Max documents to pull per collection.
 
     Yields:
-        op.upsert for each donation form row.
+        op.upsert for each sampled document.
     """
-    forms = list_forms(configuration, node_type="donation_form")
-    log.info(f"Found {len(forms)} donation forms")
+    client = get_client(configuration)
+    try:
+        database = get_database(configuration, client)
+        collections = list_collection_names(database)
 
-    if limit > 0:
-        forms = forms[:limit]
-        log.info(f"Limiting to first {limit} forms for hello world")
+        if not collections:
+            log.warning("No sb_* collections found in database")
+            return
 
-    for i, form_summary in enumerate(forms, 1):
-        nid = form_summary.get("nid")
-        detail = get_form_detail(configuration, form_id=nid)
+        for collection_name in collections:
+            log.info(f"--- Exploring {collection_name} ---")
 
-        if isinstance(detail, list) and len(detail) > 0:
-            detail = detail[0]
+            docs = sample_collection(database, collection_name, limit=sample_size)
 
-        row = format_donation_form_detail(detail)
-        yield op.upsert(table="donation_forms", data=row)
-        log.info(f"Synced form {i}/{len(forms)}: nid={nid} title={form_summary.get('title')}")
+            if not docs:
+                log.info(f"  {collection_name}: empty collection, skipping")
+                continue
 
-    log.info(f"Finished syncing {len(forms)} donation forms")
+            field_names = extract_field_names(docs)
+            log.info(f"  {collection_name}: {len(docs)} docs, fields: {field_names}")
+
+            for doc in docs:
+                row = flatten_document(doc)
+                yield op.upsert(table=collection_name, data=row)
+
+            log.info(f"  {collection_name}: upserted {len(docs)} sample rows")
+
+        log.info(f"Exploration complete: sampled {len(collections)} collections")
+
+    finally:
+        client.close()
+        log.info("MongoDB connection closed")
