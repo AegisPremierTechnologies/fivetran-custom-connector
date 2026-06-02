@@ -1,51 +1,60 @@
-"""Springboard (Jackson River) Fivetran Custom Connector.
+"""Springboard MongoDB Connector -- exploration pass.
 
-First deploy: connect to MongoDB, list available databases, log and exit.
-This discovers the database name we need for subsequent iterations.
+Connects to kqed-staging, samples a few docs from each sb_* collection,
+and logs them raw. No data lands in Fivetran yet -- this is just recon.
 """
 
+import json
+from datetime import datetime
+
+from bson import ObjectId
 from fivetran_connector_sdk import Connector
 from fivetran_connector_sdk import Logging as log
 from fivetran_connector_sdk import Operations as op
 
-from db import get_client, list_databases
+from db import get_client, list_sb_collections, sample_documents
 
-DISCOVERY_TABLE = {
-    "table": "discovery_log",
-    "primary_key": ["name"],
-    "columns": {
-        "name": "STRING",
-        "size_on_disk": "FLOAT",
-        "empty": "BOOLEAN",
-    },
+PLACEHOLDER_TABLE = {
+    "table": "placeholder",
+    "primary_key": ["id"],
+    "columns": {"id": "STRING"},
 }
 
 
+def _json_default(o):
+    if isinstance(o, ObjectId):
+        return str(o)
+    if isinstance(o, datetime):
+        return o.isoformat()
+    if isinstance(o, bytes):
+        return o.hex()
+    return str(o)
+
+
 def schema(_configuration: dict):
-    """Static schema for database discovery output."""
-    return [DISCOVERY_TABLE]
+    return [PLACEHOLDER_TABLE]
 
 
 def update(configuration: dict, state: dict):
-    """Connect to MongoDB, list databases, log results, and exit."""
-    log.info("Springboard Connector: discovering databases")
+    log.info("=== Springboard collection sampler ===")
 
     client = get_client(configuration)
     try:
-        databases = list_databases(client)
+        collections = list_sb_collections(client)
 
-        for db_info in databases:
-            yield op.upsert(table="discovery_log", data={
-                "name": db_info.get("name"),
-                "size_on_disk": db_info.get("sizeOnDisk"),
-                "empty": db_info.get("empty"),
-            })
+        for name in collections:
+            docs = sample_documents(client, name, limit=3)
+            log.info(f"--- {name} ({len(docs)} docs) ---")
+            for doc in docs:
+                log.info(json.dumps(doc, default=_json_default, indent=2))
 
+        yield op.upsert(table="placeholder", data={"id": "done"})
         yield op.checkpoint(state=state)
-        log.info("Springboard Connector: database discovery complete")
+        log.info("=== Sampling complete ===")
 
     finally:
         client.close()
+        log.info("MongoDB connection closed")
 
 
 connector = Connector(update=update, schema=schema)

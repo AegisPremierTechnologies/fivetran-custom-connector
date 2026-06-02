@@ -1,28 +1,25 @@
-"""MongoDB access layer for the Springboard data warehouse.
-
-Thin wrapper around pymongo. Returns raw documents as dicts.
-No Fivetran operations, no retry logic -- those belong in sync.py.
-"""
+"""MongoDB access layer for the Springboard data warehouse."""
 
 from pymongo import MongoClient
 from fivetran_connector_sdk import Logging as log
 
+DATABASE = "kqed-staging"
+
 
 def get_client(configuration: dict) -> MongoClient:
-    """Create a MongoClient from the connection string in configuration."""
     connection_string = configuration["connection_string"]
     log.info("Connecting to MongoDB...")
     return MongoClient(connection_string, serverSelectionTimeoutMS=10_000)
 
 
-def list_databases(client: MongoClient) -> list[dict]:
-    """List all databases the authenticated user can see.
+def list_sb_collections(client: MongoClient) -> list[str]:
+    db = client[DATABASE]
+    names = [n for n in db.list_collection_names() if n.startswith("sb_")]
+    names.sort()
+    log.info(f"Found {len(names)} sb_* collections: {names}")
+    return names
 
-    Returns:
-        List of database info dicts with name, sizeOnDisk, empty.
-    """
-    db_list = list(client.list_databases())
-    for db_info in db_list:
-        log.info(f"  Database: {db_info.get('name')}  size: {db_info.get('sizeOnDisk')}  empty: {db_info.get('empty')}")
-    log.info(f"Total databases found: {len(db_list)}")
-    return db_list
+
+def sample_documents(client: MongoClient, collection_name: str, limit: int = 3) -> list[dict]:
+    db = client[DATABASE]
+    return list(db[collection_name].find().limit(limit))
