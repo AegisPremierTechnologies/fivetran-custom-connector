@@ -27,12 +27,12 @@ jobs:
       - name: Create configuration.json
         working-directory: "./springboard"
         env:
-          SPRINGBOARD_CONNECTION_STRING: ${{ secrets.SPRINGBOARD_CONNECTION_STRING }}
+          KQED_SPRINGBOARD_CONNECTION_STRING: ${{ secrets.KQED_SPRINGBOARD_CONNECTION_STRING }}
         run: |
           echo "Creating configuration.json with provided secrets..."
           cat <<EOF > configuration.json
           {
-            "connection_string": "$SPRINGBOARD_CONNECTION_STRING"
+            "connection_string": "$KQED_SPRINGBOARD_CONNECTION_STRING"
           }
           EOF
 
@@ -42,4 +42,4 @@ jobs:
           FIVETRAN_API_KEY: ${{ secrets.FIVETRAN_API_KEY }}
           FIVETRAN_DESTINATION: ${{ secrets.SPRINGBOARD_FIVETRAN_DESTINATION }}
         run: |
-          fivetran deploy --api-key $FIVETRAN_API_KEY --destination $FIVETRAN_DESTINATION --configuration ./configuration.json --connection springboard --force
+          fivetran deploy --api-key $FIVETRAN_API_KEY --destination $FIVETRAN_DESTINATION --configuration ./configuration.json --connection springboard_client_kqed --force
