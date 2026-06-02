@@ -22,7 +22,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install fivetran-connector-sdk
+          pip install fivetran-connector-sdk pymongo
 
       - name: Create configuration.json
         working-directory: "./springboard"
