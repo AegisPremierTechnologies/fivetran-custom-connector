@@ -36,6 +36,9 @@ def update(configuration: dict, state: dict):
 
     client = get_client(configuration)
     try:
+        for db_info in client.list_databases():
+            log.info(f"  DB: {db_info.get('name')}  size: {db_info.get('sizeOnDisk')}  empty: {db_info.get('empty')}")
+
         collections = list_sb_collections(client)
 
         for name in collections:
